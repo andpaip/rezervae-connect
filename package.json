@@ -1,0 +1,21 @@
+{
+  "name": "rezervae-connect",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Rezervae Connect - Communication Platform Omnichannel Enterprise",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean",
+    "db:push": "pnpm --filter @rezervae-connect/database db:push",
+    "db:seed": "pnpm --filter @rezervae-connect/database db:seed",
+    "db:studio": "pnpm --filter @rezervae-connect/database db:studio",
+    "db:generate": "pnpm --filter @rezervae-connect/database db:generate",
+    "db:migrate": "pnpm --filter @rezervae-connect/database db:migrate"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

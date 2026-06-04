@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  esbuild: false
+  msgpackr-extract: false
+  puppeteer: false
+  sharp: false

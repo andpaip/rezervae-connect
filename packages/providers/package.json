@@ -1,0 +1,25 @@
+{
+  "name": "@rezervae-connect/providers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@rezervae-connect/database": "workspace:*",
+    "@rezervae-connect/events": "workspace:*",
+    "@rezervae-connect/shared": "workspace:*",
+    "@wppconnect-team/wppconnect": "^1.37.3",
+    "drizzle-orm": "0.44.7",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}

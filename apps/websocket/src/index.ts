@@ -1,0 +1,111 @@
+import 'dotenv/config';
+import { createServer } from 'node:http';
+import { Server } from 'socket.io';
+import { createLogger } from '@rezervae-connect/shared';
+import { eventBus } from '@rezervae-connect/events';
+import type {
+  QRGeneratedEvent,
+  InstanceConnectedEvent,
+  InstanceDisconnectedEvent,
+  CampaignProgressEvent,
+  CampaignFinishedEvent,
+  ConnectEvent,
+} from '@rezervae-connect/events';
+
+const logger = createLogger('websocket');
+
+const httpServer = createServer();
+const io = new Server(httpServer, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+});
+
+// --- Socket.IO connection handling ---
+
+io.on('connection', (socket) => {
+  logger.info({ socketId: socket.id }, 'Client connected');
+
+  socket.on('join', (tenantId: string) => {
+    socket.join(`tenant:${tenantId}`);
+    logger.info({ socketId: socket.id, tenantId }, 'Joined tenant room');
+  });
+
+  socket.on('disconnect', () => {
+    logger.info({ socketId: socket.id }, 'Client disconnected');
+  });
+});
+
+// --- EventBus → Socket.IO bridge ---
+// Subscribe to events and forward them to the correct tenant room.
+// Event names match the frontend's current expectations.
+
+function emitToTenant(tenantId: string, event: string, data: unknown): void {
+  io.to(`tenant:${tenantId}`).emit(event, data);
+}
+
+eventBus.on('qr.generated', (event) => {
+  const e = event as QRGeneratedEvent;
+  emitToTenant(e.tenantId, 'qrCodeUpdate', {
+    session: e.data.sessionName,
+    qrCode: e.data.qrCode,
+  });
+});
+
+eventBus.on('instance.connected', (event) => {
+  const e = event as InstanceConnectedEvent;
+  emitToTenant(e.tenantId, 'botConnected', e.data.sessionName);
+  emitToTenant(e.tenantId, 'clientStatus', {
+    session: e.data.sessionName,
+    status: 'conectado',
+  });
+});
+
+eventBus.on('instance.disconnected', (event) => {
+  const e = event as InstanceDisconnectedEvent;
+  emitToTenant(e.tenantId, 'clientStatus', {
+    session: e.data.sessionName,
+    status: 'desconectado',
+    reason: e.data.reason,
+  });
+});
+
+eventBus.on('campaign.progress', (event) => {
+  const e = event as CampaignProgressEvent;
+  emitToTenant(e.tenantId, 'campaignProgress', {
+    campaignId: e.data.campaignId,
+    sent: e.data.sent,
+    total: e.data.total,
+    errors: e.data.errors,
+  });
+});
+
+eventBus.on('campaign.finished', (event) => {
+  const e = event as CampaignFinishedEvent;
+  emitToTenant(e.tenantId, 'campaignProgress', {
+    campaignId: e.data.campaignId,
+    status: 'finished',
+    stats: e.data.stats,
+  });
+});
+
+// Generic status messages (logs)
+eventBus.on('message.sent', (event) => {
+  emitToTenant(event.tenantId, 'statusMessages', {
+    type: 'sent',
+    data: (event as ConnectEvent & { data: unknown }).data,
+  });
+});
+
+eventBus.on('message.failed', (event) => {
+  emitToTenant(event.tenantId, 'statusMessages', {
+    type: 'failed',
+    data: (event as ConnectEvent & { data: unknown }).data,
+  });
+});
+
+// --- Start server ---
+
+const port = Number(process.env.WS_PORT ?? 3101);
+
+httpServer.listen(port, () => {
+  logger.info({ port }, 'Rezervae Connect WebSocket ready');
+});
