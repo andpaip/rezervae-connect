@@ -20,12 +20,18 @@ async function processReconnect(job: Job<ReconnectJob>): Promise<void> {
 
   logger.info(ctx, 'Processing reconnect job');
 
-  // SessionManager handles reconnection logic directly.
-  // This worker exists for queue-based reconnection (e.g., triggered by API).
+  // SessionManager handles session lifecycle.
+  // For new connections (no managed session yet), use createSession.
+  // For existing sessions, use reconnectSession.
   const { getSessionManager } = await import('../registry.js');
   const sessionManager = getSessionManager();
 
-  await sessionManager.reconnectSession(sessionName);
+  const hasSession = sessionManager.hasSession?.(sessionName);
+  if (hasSession) {
+    await sessionManager.reconnectSession(sessionName);
+  } else {
+    await sessionManager.createSession(tenantId, instanceId, sessionName);
+  }
 
   await db.insert(auditLogs).values({
     tenantId,

@@ -18,7 +18,8 @@ declare module 'fastify' {
 const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.decorateRequest('tenant', undefined as unknown as TenantContext);
 
-  fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+  // Use preHandler so request.body is already parsed (onRequest runs before body parsing)
+  fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
     // Skip health endpoints
     if (request.url.startsWith('/api/v1/health')) return;
 
@@ -58,8 +59,8 @@ const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
       return reply.code(401).send({ error: 'Invalid credentials' });
     }
 
-    // Validate HMAC signature
-    const body = typeof request.body === 'string' ? request.body : JSON.stringify(request.body ?? '');
+    // Validate HMAC signature using raw body (avoids JSON re-serialization differences)
+    const body = request.rawBody ?? '';
     const expectedSig = createHmac('sha256', token)
       .update(`${timestamp}:${request.method}:${request.url}:${body}`)
       .digest('hex');

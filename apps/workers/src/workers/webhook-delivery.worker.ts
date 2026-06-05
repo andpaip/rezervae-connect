@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnectionOptions, QUEUE_NAMES } from '@rezervae-connect/queue';
 import { db, auditLogs } from '@rezervae-connect/database';
@@ -14,21 +15,71 @@ export interface WebhookDeliveryJob {
   correlationId: string;
 }
 
+/**
+ * Check if the target URL is the Core API (needs HMAC authentication).
+ */
+function isCoreTarget(url: string): boolean {
+  const coreUrl = process.env.CORE_API_URL ?? 'http://localhost:8080';
+  return url.startsWith(coreUrl);
+}
+
+/**
+ * Build HMAC headers for Core API targets.
+ * Same algorithm as core-api-client.ts.
+ */
+function buildCoreHmacHeaders(
+  method: string,
+  url: string,
+  body: string,
+  tenantId: string,
+  traceId: string,
+  correlationId: string,
+): Record<string, string> {
+  const secret = process.env.CORE_SECRET ?? 'dev-secret';
+  const timestamp = Date.now().toString();
+
+  // Extract path from full URL
+  const urlObj = new URL(url);
+  const path = urlObj.pathname;
+
+  const signature = createHmac('sha256', secret)
+    .update(`${timestamp}:${method}:${path}:${body}`)
+    .digest('hex');
+
+  return {
+    'X-Connect-Signature': signature,
+    'X-Timestamp': timestamp,
+    'X-Tenant-Id': tenantId,
+    'X-Trace-Id': traceId,
+    'X-Correlation-Id': correlationId,
+  };
+}
+
 async function processWebhookDelivery(job: Job<WebhookDeliveryJob>): Promise<void> {
   const { tenantId, url, event, payload, traceId, correlationId } = job.data;
   const ctx = { tenantId, url, event, traceId, correlationId, jobId: job.id };
 
   logger.info(ctx, 'Delivering webhook');
 
+  const body = JSON.stringify(payload);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Connect-Event': event,
+    'X-Trace-Id': traceId,
+    'X-Correlation-Id': correlationId,
+  };
+
+  // Add HMAC auth for Core API targets
+  if (isCoreTarget(url)) {
+    const hmacHeaders = buildCoreHmacHeaders('POST', url, body, tenantId, traceId, correlationId);
+    Object.assign(headers, hmacHeaders);
+  }
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Connect-Event': event,
-      'X-Trace-Id': traceId,
-      'X-Correlation-Id': correlationId,
-    },
-    body: JSON.stringify(payload),
+    headers,
+    body,
     signal: AbortSignal.timeout(10_000),
   });
 

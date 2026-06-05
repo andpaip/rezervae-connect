@@ -35,6 +35,10 @@ export class SessionManager {
 
   // --- Public API ---
 
+  hasSession(sessionName: string): boolean {
+    return this.managedSessions.has(sessionName);
+  }
+
   async createSession(tenantId: string, instanceId: string, sessionName: string): Promise<void> {
     const trace = createTraceContext();
 

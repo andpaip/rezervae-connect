@@ -2,11 +2,9 @@ import { eq, and } from 'drizzle-orm';
 import { db, conversationSessions, conversationMessages, conversationContext, auditLogs, messageLogs } from '@rezervae-connect/database';
 import { getQueues } from '@rezervae-connect/queue';
 import { eventBus } from '@rezervae-connect/events';
-import { createLogger, type RawIncomingMessage, createTraceContext } from '@rezervae-connect/shared';
+import { createLogger, type RawIncomingMessage, createTraceContext, coreApiPost } from '@rezervae-connect/shared';
 
 const logger = createLogger('message-router');
-
-const CORE_API_URL = process.env.CORE_API_URL ?? 'http://localhost:8080';
 
 interface RoutingContext {
   tenantId: string;
@@ -121,24 +119,15 @@ async function handleListResponse(ctx: RoutingContext, sessionId: string): Promi
     return;
   }
 
-  // Call Core API to update comanda status
-  try {
-    const response = await fetch(`${CORE_API_URL}/api/internal/comandas/${comandaId}/confirmation-status`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Internal-Source': 'connect',
-        'X-Trace-Id': traceId,
-      },
-      body: JSON.stringify({ status: mapped.status }),
-      signal: AbortSignal.timeout(10_000),
-    });
+  // Call Core API to update comanda status (HMAC authenticated)
+  const coreResult = await coreApiPost(
+    `/api/internal/comandas/${comandaId}/confirmation-status`,
+    { status: mapped.status },
+    { tenantId, traceId, correlationId },
+  );
 
-    if (!response.ok) {
-      logger.error({ ...logCtx, statusCode: response.status }, 'Core API call failed');
-    }
-  } catch (err) {
-    logger.error({ ...logCtx, err }, 'Failed to call Core API');
+  if (!coreResult.ok) {
+    logger.error({ ...logCtx, statusCode: coreResult.status }, 'Core API call failed');
   }
 
   // Send reply message
