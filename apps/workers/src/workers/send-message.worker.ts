@@ -103,6 +103,13 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
 
   logger.info(ctx, 'Processing send-message job');
 
+  // Guard: check if message was already sent (prevents re-send on retry)
+  const [existingLog] = await db.select({ status: messageLogs.status }).from(messageLogs).where(eq(messageLogs.id, messageLogId));
+  if (existingLog?.status === 'sent') {
+    logger.info(ctx, 'Message already sent, skipping retry');
+    return { success: true };
+  }
+
   // Check daily limit before acquiring lock
   const withinLimit = await checkDailyLimit(instanceId);
   if (!withinLimit) {

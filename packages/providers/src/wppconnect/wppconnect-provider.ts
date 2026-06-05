@@ -154,7 +154,10 @@ export class WPPConnectProvider implements ChannelProvider {
       });
       return { success: true, providerMessageId: (result as { id?: string }).id };
     } catch (err) {
-      return this.handleSendError(params.sessionName, params.to, err, 'sendListMessage');
+      const error = err instanceof Error ? err.message : String(err);
+      // WPPConnect v2 list messages are unstable — fallback to plain text
+      logger.warn({ sessionName: params.sessionName, to: params.to, error }, 'sendListMessage failed, falling back to sendMessage');
+      return this.sendMessage({ sessionName: params.sessionName, to: params.to, content: params.content });
     }
   }
 
