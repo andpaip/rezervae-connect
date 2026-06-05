@@ -155,7 +155,13 @@ export class WPPConnectProvider implements ChannelProvider {
       return { success: true, providerMessageId: (result as { id?: string }).id };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      // WPPConnect v2 list messages are unstable — fallback to plain text
+      // WPPConnect v2 sends the list successfully but crashes on post-send @lid tracking.
+      // The message IS delivered — do NOT fallback to sendMessage (would cause duplicate).
+      if (error.includes('not found') && error.includes('@lid')) {
+        logger.warn({ sessionName: params.sessionName, to: params.to, error }, 'sendListMessage: message delivered but post-send tracking failed (WPP @lid bug), treating as success');
+        return { success: true, providerMessageId: undefined };
+      }
+      // For non-@lid errors, fallback to plain text
       logger.warn({ sessionName: params.sessionName, to: params.to, error }, 'sendListMessage failed, falling back to sendMessage');
       return this.sendMessage({ sessionName: params.sessionName, to: params.to, content: params.content });
     }
