@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@rezervae-connect/shared": "workspace:*",
-    "bullmq": "^5.52.2"
+    "bullmq": "^5.52.2",
+    "ioredis": "^5.10.1"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

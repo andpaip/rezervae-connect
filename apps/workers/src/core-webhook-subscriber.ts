@@ -11,6 +11,8 @@ const logger = createLogger('core-webhook-subscriber');
 const CORE_WEBHOOK_EVENTS = [
   'message.sent',
   'message.failed',
+  'message.received',
+  'conversation.created',
   'campaign.finished',
 ] as const;
 

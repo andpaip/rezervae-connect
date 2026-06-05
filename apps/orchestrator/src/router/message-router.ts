@@ -88,8 +88,27 @@ export async function routeIncomingMessage(ctx: RoutingContext): Promise<void> {
   if (message.listResponse?.singleSelectReply?.selectedRowId) {
     await handleListResponse(ctx, session.id);
   } else {
-    // Text message — stub for future AI/bot routing
-    logger.info(logCtx, 'Text message received — routing stub (future: AI/bot/human)');
+    // Forward text message to Core via event (Core decides next action)
+    eventBus.emit({
+      type: 'message.received',
+      tenantId, traceId, correlationId,
+      timestamp: new Date().toISOString(),
+      version: '1.0',
+      data: {
+        sessionName,
+        from: message.from,
+        body: message.body,
+        messageType: 'text',
+        sessionId: session.id,
+        customerPhone: message.from,
+        customerName: message.sender.pushname ?? null,
+        channel: 'whatsapp',
+        direction: 'inbound',
+        providerMessageId: message.id,
+      },
+    });
+
+    logger.info(logCtx, 'Text message forwarded to Core via message.received event');
   }
 }
 

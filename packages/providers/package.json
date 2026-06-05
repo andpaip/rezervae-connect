@@ -14,7 +14,7 @@
     "@rezervae-connect/database": "workspace:*",
     "@rezervae-connect/events": "workspace:*",
     "@rezervae-connect/shared": "workspace:*",
-    "@wppconnect-team/wppconnect": "^1.37.3",
+    "@wppconnect-team/wppconnect": "^2.2.1",
     "drizzle-orm": "0.44.7",
     "pino": "^9.6.0"
   },

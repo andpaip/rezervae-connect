@@ -8,7 +8,18 @@ export interface BaseEvent {
 
 export interface MessageReceivedEvent extends BaseEvent {
   type: 'message.received';
-  data: { sessionName: string; from: string; body: string; messageType: string };
+  data: {
+    sessionName: string;
+    from: string;
+    body: string;
+    messageType: string;
+    customerPhone?: string;
+    customerName?: string | null;
+    sessionId?: string;
+    channel?: string;
+    direction?: string;
+    providerMessageId?: string;
+  };
 }
 
 export interface MessageSentEvent extends BaseEvent {

@@ -20,8 +20,9 @@ const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
 
   // Use preHandler so request.body is already parsed (onRequest runs before body parsing)
   fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    // Skip health endpoints
+    // Skip health and admin endpoints (admin has its own auth)
     if (request.url.startsWith('/api/v1/health')) return;
+    if (request.url.startsWith('/api/v1/admin')) return;
 
     const token = request.headers['x-internal-token'] as string | undefined;
     const signature = request.headers['x-signature'] as string | undefined;

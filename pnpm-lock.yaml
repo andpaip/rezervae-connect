@@ -231,8 +231,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       '@wppconnect-team/wppconnect':
-        specifier: ^1.37.3
-        version: 1.41.3(puppeteer-core@24.43.1)(typescript@5.9.3)
+        specifier: ^2.2.1
+        version: 2.2.1(puppeteer-core@24.43.1)(typescript@5.9.3)
       drizzle-orm:
         specifier: 0.44.7
         version: 0.44.7(postgres@3.4.9)
@@ -255,6 +255,9 @@ importers:
       bullmq:
         specifier: ^5.52.2
         version: 5.78.0
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.11.1
     devDependencies:
       '@types/node':
         specifier: ^22.15.0
@@ -1029,11 +1032,11 @@ packages:
   '@types/yauzl@2.10.3':
     resolution: {integrity: sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q==}
 
-  '@wppconnect-team/wppconnect@1.41.3':
-    resolution: {integrity: sha512-XT9sQEg6ObXql3WS75xEBTDPzB/NgzTuo4nZoGnHuiJuWMgH2kTuU3mRBSpMVA4nhHva7G2c5lbBGPtWX5Za5w==}
+  '@wppconnect-team/wppconnect@2.2.1':
+    resolution: {integrity: sha512-xGjdpMLG58Yae45ACpA2e1TyrusNRgcsEZtQAtEeyHlC7ien/8dqHHFrr05Jg6nSNfOWRmIh4/Z8BAW35zimQg==}
 
-  '@wppconnect/wa-js@3.23.4':
-    resolution: {integrity: sha512-YAVMxz7n3DXqMq469OQSEKW5Nfjb9/ai1vcrlIweJb0RUgkfiTYJT9os+bcZ6QP8lmlNX8wLBJM/04hgtxZJEA==}
+  '@wppconnect/wa-js@4.3.0':
+    resolution: {integrity: sha512-XZ8BXjOMXizpPWV/LaKwCoJsBdwrUH6Eb1GXj40iclI/bUkGarB9aJ9QYnvkTkrB3eFHmrowSjJFQwhZch3ZmA==}
     engines: {whatsapp-web: '>=2.2326.10-beta'}
 
   '@wppconnect/wa-version@1.5.4081':
@@ -3070,9 +3073,9 @@ snapshots:
       '@types/node': 22.19.19
     optional: true
 
-  '@wppconnect-team/wppconnect@1.41.3(puppeteer-core@24.43.1)(typescript@5.9.3)':
+  '@wppconnect-team/wppconnect@2.2.1(puppeteer-core@24.43.1)(typescript@5.9.3)':
     dependencies:
-      '@wppconnect/wa-js': 3.23.4
+      '@wppconnect/wa-js': 4.3.0
       '@wppconnect/wa-version': 1.5.4081
       atob: 2.1.2
       axios: 1.17.0
@@ -3118,7 +3121,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@wppconnect/wa-js@3.23.4': {}
+  '@wppconnect/wa-js@4.3.0': {}
 
   '@wppconnect/wa-version@1.5.4081':
     dependencies:

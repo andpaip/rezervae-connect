@@ -228,8 +228,8 @@ async function processCampaignSend(job: Job<CampaignProcessJob>): Promise<void> 
   });
 
   // Re-enqueue self with random delay (throttling)
-  const minDelay = config?.intervalMinMs ?? 10_000;
-  const maxDelay = config?.intervalMaxMs ?? 30_000;
+  const minDelay = config?.intervalMinMs ?? 30_000;  // 30s min (legacy: 30s)
+  const maxDelay = config?.intervalMaxMs ?? 90_000;  // 90s max (legacy: 90s)
   const delay = Math.floor(Math.random() * (maxDelay - minDelay)) + minDelay;
 
   await queues.campaignSend.add('campaign-process', job.data, { delay });

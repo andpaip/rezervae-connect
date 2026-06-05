@@ -42,9 +42,12 @@ function buildCoreHmacHeaders(
   const urlObj = new URL(url);
   const path = urlObj.pathname;
 
+  const hmacInput = `${timestamp}:${method}:${path}:${body}`;
   const signature = createHmac('sha256', secret)
-    .update(`${timestamp}:${method}:${path}:${body}`)
+    .update(hmacInput)
     .digest('hex');
+
+  logger.debug({ secret: secret.substring(0, 8) + '...', secretLen: secret.length, path, bodyLen: body.length, sigPreview: signature.substring(0, 16) }, 'HMAC debug');
 
   return {
     'X-Connect-Signature': signature,

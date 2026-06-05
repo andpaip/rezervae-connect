@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
+// entity_id is varchar (not uuid) because core-events use composite IDs like "appointment.created:uuid:timestamp"
 import { tenants } from './tenants.js';
 
 export const auditLogs = pgTable('audit_logs', {
@@ -6,7 +7,7 @@ export const auditLogs = pgTable('audit_logs', {
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
   actor: varchar('actor', { length: 100 }).notNull(),
   entityType: varchar('entity_type', { length: 50 }).notNull(),
-  entityId: uuid('entity_id'),
+  entityId: varchar('entity_id', { length: 255 }),
   action: varchar('action', { length: 50 }).notNull(),
   oldState: jsonb('old_state').$type<Record<string, unknown> | null>(),
   newState: jsonb('new_state').$type<Record<string, unknown> | null>(),

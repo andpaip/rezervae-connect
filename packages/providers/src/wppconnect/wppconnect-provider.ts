@@ -125,9 +125,7 @@ export class WPPConnectProvider implements ChannelProvider {
       const result = await client.sendText(`${params.to}@c.us`, params.content);
       return { success: true, providerMessageId: (result as { id?: string }).id };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      logger.error({ sessionName: params.sessionName, to: params.to, error }, 'sendMessage failed');
-      return { success: false, error };
+      return this.handleSendError(params.sessionName, params.to, err, 'sendMessage');
     }
   }
 
@@ -142,9 +140,7 @@ export class WPPConnectProvider implements ChannelProvider {
       );
       return { success: true, providerMessageId: (result as { id?: string }).id };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      logger.error({ sessionName: params.sessionName, to: params.to, error }, 'sendImage failed');
-      return { success: false, error };
+      return this.handleSendError(params.sessionName, params.to, err, 'sendImage');
     }
   }
 
@@ -158,9 +154,7 @@ export class WPPConnectProvider implements ChannelProvider {
       });
       return { success: true, providerMessageId: (result as { id?: string }).id };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      logger.error({ sessionName: params.sessionName, to: params.to, error }, 'sendListMessage failed');
-      return { success: false, error };
+      return this.handleSendError(params.sessionName, params.to, err, 'sendListMessage');
     }
   }
 
@@ -181,6 +175,21 @@ export class WPPConnectProvider implements ChannelProvider {
   }
 
   // --- Internal helpers ---
+
+  /**
+   * WPPConnect v2.x throws "Message true_...@lid_..._out not found" after
+   * successfully delivering a message. The message IS sent but internal
+   * tracking of the new @lid ID format fails. Treat as success.
+   */
+  private handleSendError(sessionName: string, to: string, err: unknown, method: string): SendResult {
+    const error = err instanceof Error ? err.message : String(err);
+    if (error.includes('not found') && error.includes('@lid')) {
+      logger.warn({ sessionName, to, error }, `${method}: message delivered but post-send tracking failed (WPP @lid bug), treating as success`);
+      return { success: true, providerMessageId: undefined };
+    }
+    logger.error({ sessionName, to, error }, `${method} failed`);
+    return { success: false, error };
+  }
 
   private setStatus(sessionName: string, status: InstanceStatus): void {
     const prev = this.statuses.get(sessionName);
