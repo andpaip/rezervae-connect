@@ -61,9 +61,11 @@ const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
     }
 
     // Validate HMAC signature using raw body (avoids JSON re-serialization differences)
+    // Use pathname only (no query string) to match Laravel's signing convention
     const body = request.rawBody ?? '';
+    const pathname = new URL(request.url, 'http://localhost').pathname;
     const expectedSig = createHmac('sha256', token)
-      .update(`${timestamp}:${request.method}:${request.url}:${body}`)
+      .update(`${timestamp}:${request.method}:${pathname}:${body}`)
       .digest('hex');
 
     if (signature !== expectedSig) {
