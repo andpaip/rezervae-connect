@@ -1,4 +1,5 @@
 import wppconnect from '@wppconnect-team/wppconnect';
+import { execSync } from 'node:child_process';
 import { createLogger } from '@rezervae-connect/shared';
 import type {
   ChannelProvider,
@@ -257,7 +258,6 @@ export class WPPConnectProvider implements ChannelProvider {
   }
 
   private killBrowserTree(sessionName: string, pid: number): void {
-    const { execSync } = require('node:child_process');
     try {
       // Kill entire process tree: children first, then parent
       execSync(`kill -9 -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 });
