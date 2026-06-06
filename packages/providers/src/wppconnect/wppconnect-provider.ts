@@ -203,20 +203,42 @@ export class WPPConnectProvider implements ChannelProvider {
   async logout(sessionName: string): Promise<void> {
     const client = this.sessions.get(sessionName);
     if (client) {
+      // Grab browser PID before logout destroys the execution context
+      let browserPid: number | undefined;
+      try {
+        const browser = (client as unknown as { page: { browser(): { process(): { pid: number } | null } } }).page.browser();
+        browserPid = browser.process()?.pid;
+      } catch {
+        // Ignore — page may already be closed
+      }
+
       try {
         await client.logout();
       } catch (err) {
         logger.warn({ sessionName, err }, 'Error during WPP logout (may already be logged out)');
       }
+
       try {
         await client.close();
       } catch (err) {
         logger.warn({ sessionName, err }, 'Error closing WPP session after logout');
+        // close() failed (logout destroyed context) — kill browser process directly
+        if (browserPid) {
+          try {
+            process.kill(browserPid, 'SIGKILL');
+            logger.info({ sessionName, pid: browserPid }, 'Killed zombie browser process');
+          } catch {
+            // Already dead
+          }
+        }
       }
     }
 
     this.sessions.delete(sessionName);
     this.setStatus(sessionName, 'disconnected');
+
+    // Wait briefly for browser process to fully terminate before deleting tokens
+    await new Promise((r) => setTimeout(r, 1000));
 
     // Delete persisted tokens so next connect requires a new QR
     const fs = await import('node:fs/promises');
