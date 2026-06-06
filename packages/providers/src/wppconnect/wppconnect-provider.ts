@@ -82,23 +82,33 @@ export class WPPConnectProvider implements ChannelProvider {
 
     // Extract phone number from connected client
     try {
-      const hostDevice = await client.getHostDevice();
-      logger.info({ sessionName, hostDevice: JSON.stringify(hostDevice).slice(0, 500) }, 'Raw hostDevice');
-
-      // WPPConnect hostDevice.id._serialized contains "5511999999999@c.us"
-      const hd = hostDevice as Record<string, unknown>;
-      const idObj = hd?.id as Record<string, unknown> | undefined;
-      const serialized = idObj?._serialized?.toString()
-        ?? idObj?.user?.toString()
-        ?? hd?.wid?.toString()
+      // WPPConnect v2 + WA-JS: getHostDevice().id is just "1", not the phone.
+      // Use getWid() which returns the WhatsApp ID (phone@c.us format).
+      const wid = await client.getWid();
+      const widStr = typeof wid === 'string' ? wid
+        : (wid as Record<string, unknown>)?._serialized?.toString()
+        ?? (wid as Record<string, unknown>)?.user?.toString()
         ?? '';
-      const phone = serialized.replace('@c.us', '').replace(/\D/g, '');
-      if (phone) {
+      const phone = widStr.replace('@c.us', '').replace(/\D/g, '');
+      logger.info({ sessionName, rawWid: JSON.stringify(wid).slice(0, 200), phone }, 'WID extraction');
+      if (phone && phone.length > 3) {
         this.phones.set(sessionName, phone);
         logger.info({ sessionName, phone }, 'Phone number captured');
       }
     } catch (err) {
-      logger.warn({ sessionName, err }, 'Could not extract phone number');
+      logger.warn({ sessionName, err }, 'Could not extract phone number from getWid');
+      // Fallback: try to get from page context
+      try {
+        const number = await (client as unknown as Record<string, CallableFunction>).page?.evaluate(
+          () => (window as unknown as Record<string, unknown>).Store?.Conn?.wid?.user,
+        );
+        if (number) {
+          this.phones.set(sessionName, String(number));
+          logger.info({ sessionName, phone: number }, 'Phone captured via Store.Conn.wid');
+        }
+      } catch {
+        logger.warn({ sessionName }, 'All phone extraction methods failed');
+      }
     }
 
     this.setStatus(sessionName, 'connected');
