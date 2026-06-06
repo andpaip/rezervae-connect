@@ -36,6 +36,7 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
         instanceName: instance.instanceName,
         status: instance.status,
         phone: instance.phone,
+        qrCode: instance.qrCode,
         healthScore: instance.healthScore,
         failureRate: instance.failureRate,
         lastSeenAt: instance.lastSeenAt,
