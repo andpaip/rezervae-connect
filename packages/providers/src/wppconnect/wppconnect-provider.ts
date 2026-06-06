@@ -222,14 +222,15 @@ export class WPPConnectProvider implements ChannelProvider {
         await client.close();
       } catch (err) {
         logger.warn({ sessionName, err }, 'Error closing WPP session after logout');
-        // close() failed (logout destroyed context) — kill browser process directly
-        if (browserPid) {
-          try {
-            process.kill(browserPid, 'SIGKILL');
-            logger.info({ sessionName, pid: browserPid }, 'Killed zombie browser process');
-          } catch {
-            // Already dead
-          }
+      }
+
+      // Always kill browser process — close() may succeed but leave zombie
+      if (browserPid) {
+        try {
+          process.kill(browserPid, 'SIGKILL');
+          logger.info({ sessionName, pid: browserPid }, 'Killed browser process');
+        } catch {
+          // Already dead — close() worked
         }
       }
     }
