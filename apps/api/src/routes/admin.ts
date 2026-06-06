@@ -1,4 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { randomBytes, createHmac } from 'node:crypto';
+import { eq } from 'drizzle-orm';
+import { db, tenants } from '@rezervae-connect/database';
 import { getQueues, QUEUE_NAMES } from '@rezervae-connect/queue';
 import { createLogger } from '@rezervae-connect/shared';
 
@@ -14,6 +17,49 @@ const adminRoutes: FastifyPluginAsync = async (fastify) => {
     if (!expected || auth !== `Bearer ${expected}`) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
+  });
+
+  // POST /api/v1/admin/tenants — create or return existing tenant
+  fastify.post<{
+    Body: { name: string; slug: string; externalId: string };
+  }>('/api/v1/admin/tenants', async (request, reply) => {
+    const { name, slug, externalId } = request.body;
+
+    if (!name || !slug) {
+      return reply.status(400).send({ error: 'name and slug are required' });
+    }
+
+    // Idempotent: if slug already exists, return existing tenant (no new apiKey)
+    const [existing] = await db
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.slug, slug))
+      .limit(1);
+
+    if (existing) {
+      logger.info({ slug, tenantId: existing.id }, 'Tenant already exists, returning existing');
+      return { data: { id: existing.id, apiKey: null, existing: true } };
+    }
+
+    // Generate API key and compute hash
+    const apiKey = randomBytes(32).toString('hex');
+    const secret = process.env.INTERNAL_SECRET ?? 'dev-secret';
+    const apiKeyHash = createHmac('sha256', secret).update(apiKey).digest('hex');
+
+    const [tenant] = await db
+      .insert(tenants)
+      .values({
+        name,
+        slug,
+        apiKeyHash,
+        settings: { externalId },
+        status: 'active',
+      })
+      .returning({ id: tenants.id });
+
+    logger.info({ slug, tenantId: tenant.id, externalId }, 'Tenant provisioned');
+
+    return { data: { id: tenant.id, apiKey, existing: false } };
   });
 
   fastify.post<{ Body: { queue: string } }>('/api/v1/admin/queues/drain', async (request) => {
