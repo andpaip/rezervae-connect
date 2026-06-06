@@ -1,4 +1,5 @@
 import { eq, and } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { db } from '@rezervae-connect/database';
 import { whatsappInstances, auditLogs } from '@rezervae-connect/database';
 import { eventBus } from '@rezervae-connect/events';
@@ -21,6 +22,7 @@ interface ManagedSession {
   instanceId: string;
   sessionName: string;
   reconnectAttempts: number;
+  lastQrHash?: string;
 }
 
 export class SessionManager {
@@ -204,6 +206,12 @@ export class SessionManager {
     this.provider.onQRCode(async (sessionName, qr) => {
       const session = this.managedSessions.get(sessionName);
       if (!session) return;
+
+      // Dedup: skip if QR hasn't changed
+      const qrHash = createHash('md5').update(qr).digest('hex');
+      if (session.lastQrHash === qrHash) return;
+      session.lastQrHash = qrHash;
+
       const trace = createTraceContext();
 
       await this.updateInstanceStatus(session.instanceId, 'qr_ready', trace, {

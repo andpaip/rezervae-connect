@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { getQueues } from '@rezervae-connect/queue';
 import { createLogger } from '@rezervae-connect/shared';
+import { isDuplicateWebhook } from '../plugins/safety-guard.js';
 
 const logger = createLogger('core-events');
 
@@ -25,6 +26,11 @@ const coreEventsRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!body.event_type || !body.event_id) {
       return reply.code(400).send({ error: 'Missing event_type or event_id' });
+    }
+
+    // Webhook storm protection: suppress duplicate events in short window
+    if (isDuplicateWebhook(body.event_type, body.event_id, body.occurred_at ?? new Date().toISOString())) {
+      return reply.code(202).send({ ok: true, event_id: body.event_id, status: 'deduplicated' });
     }
 
     const { tenantId, traceId, correlationId } = request.tenant;

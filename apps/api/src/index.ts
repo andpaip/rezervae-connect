@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import { createLogger } from '@rezervae-connect/shared';
 import internalAuth from './plugins/internal-auth.js';
 import tenantRateLimit from './plugins/tenant-rate-limit.js';
+import safetyGuard from './plugins/safety-guard.js';
 import healthRoutes from './routes/health.js';
 import instanceRoutes from './routes/instances.js';
 import messageRoutes from './routes/messages.js';
@@ -47,6 +48,7 @@ await app.register(rateLimit, {
 // Auth (skips /api/v1/health)
 await app.register(internalAuth);
 await app.register(tenantRateLimit);
+await app.register(safetyGuard);
 
 // Routes
 await app.register(healthRoutes);
