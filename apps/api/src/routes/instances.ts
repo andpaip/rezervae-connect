@@ -93,6 +93,12 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(409).send({ error: 'Instance already connected' });
     }
 
+    // Clear stale QR and set connecting status synchronously (before worker processes)
+    await db.update(whatsappInstances).set({
+      status: 'connecting',
+      qrCode: null,
+    }).where(eq(whatsappInstances.id, instance.id));
+
     // Enqueue reconnect job (workers handle session creation)
     // jobId dedup prevents duplicate jobs in BullMQ
     const queues = getQueues();
@@ -133,10 +139,11 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!instance) return reply.code(404).send({ error: 'Instance not found' });
 
-    // Update status to disconnected
+    // Update status to disconnected and clear QR synchronously
     await db.update(whatsappInstances).set({
       status: 'disconnected',
       disconnectedAt: new Date(),
+      qrCode: null,
     }).where(eq(whatsappInstances.id, instance.id));
 
     await db.insert(auditLogs).values({
@@ -161,6 +168,54 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
     }, { jobId: `disconnect-${instance.id}-${Date.now()}` });
 
     return reply.code(202).send({ message: 'Disconnection initiated', instanceId: instance.id });
+  });
+
+  // Logout instance (unpair — deletes tokens, requires new QR to reconnect)
+  fastify.post<{ Params: { id: string } }>('/api/v1/instances/:id/logout', async (request, reply) => {
+    const { tenantId, traceId, correlationId } = request.tenant;
+
+    const [instance] = await db
+      .select()
+      .from(whatsappInstances)
+      .where(
+        and(
+          eq(whatsappInstances.id, request.params.id),
+          eq(whatsappInstances.tenantId, tenantId),
+        ),
+      );
+
+    if (!instance) return reply.code(404).send({ error: 'Instance not found' });
+
+    // Update status and clear all connection data synchronously
+    await db.update(whatsappInstances).set({
+      status: 'disconnected',
+      disconnectedAt: new Date(),
+      qrCode: null,
+      phone: null,
+    }).where(eq(whatsappInstances.id, instance.id));
+
+    await db.insert(auditLogs).values({
+      tenantId,
+      actor: 'api',
+      entityType: 'instance',
+      entityId: instance.id,
+      action: 'logout_requested',
+      metadata: { traceId, correlationId },
+    });
+
+    // Enqueue logout job (worker will call provider.logout to delete tokens)
+    const queues = getQueues();
+    await queues.reconnect.add('logout', {
+      tenantId,
+      instanceId: instance.id,
+      sessionName: instance.sessionName,
+      attempt: 0,
+      action: 'logout',
+      traceId,
+      correlationId,
+    }, { jobId: `logout-${instance.id}-${Date.now()}` });
+
+    return reply.code(202).send({ message: 'Logout initiated', instanceId: instance.id });
   });
 };
 

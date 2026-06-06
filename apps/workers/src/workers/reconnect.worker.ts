@@ -10,7 +10,7 @@ export interface ReconnectJob {
   instanceId: string;
   sessionName: string;
   attempt: number;
-  action?: 'disconnect'; // when set, worker disconnects instead of reconnecting
+  action?: 'disconnect' | 'logout'; // when set, worker disconnects/logs out instead of reconnecting
   traceId: string;
   correlationId: string;
 }
@@ -26,6 +26,13 @@ async function processReconnect(job: Job<ReconnectJob>): Promise<void> {
   if (job.data.action === 'disconnect') {
     logger.info(ctx, 'Processing disconnect job');
     await sessionManager.disconnectSession(sessionName);
+    return;
+  }
+
+  // Handle logout requests — unpair + delete tokens
+  if (job.data.action === 'logout') {
+    logger.info(ctx, 'Processing logout job');
+    await sessionManager.logoutSession(sessionName);
     return;
   }
 

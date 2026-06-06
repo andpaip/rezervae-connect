@@ -92,6 +92,30 @@ export class SessionManager {
     await this.audit(tenantId, instanceId, 'disconnected', { status: 'connected' }, { status: 'disconnected' }, trace);
   }
 
+  async logoutSession(sessionName: string): Promise<void> {
+    const session = this.managedSessions.get(sessionName);
+    if (!session) {
+      logger.warn({ sessionName }, 'No managed session found to logout');
+      return;
+    }
+
+    const trace = createTraceContext();
+    const { tenantId, instanceId } = session;
+
+    logger.info({ sessionName, ...trace }, 'Logging out session (unpair + delete tokens)');
+
+    // Remove FIRST — prevents onStatusChange from triggering auto-reconnect
+    this.managedSessions.delete(sessionName);
+
+    await this.provider.logout(sessionName);
+    await this.updateInstanceStatus(instanceId, 'disconnected', trace, {
+      disconnectedAt: new Date(),
+      qrCode: null,
+      phone: null,
+    });
+    await this.audit(tenantId, instanceId, 'logged_out', { status: 'connected' }, { status: 'disconnected' }, trace);
+  }
+
   async reconnectSession(sessionName: string): Promise<void> {
     const session = this.managedSessions.get(sessionName);
     if (!session) {

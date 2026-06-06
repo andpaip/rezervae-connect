@@ -167,6 +167,39 @@ export class WPPConnectProvider implements ChannelProvider {
     }
   }
 
+  async logout(sessionName: string): Promise<void> {
+    const client = this.sessions.get(sessionName);
+    if (client) {
+      try {
+        await client.logout();
+      } catch (err) {
+        logger.warn({ sessionName, err }, 'Error during WPP logout (may already be logged out)');
+      }
+      try {
+        await client.close();
+      } catch (err) {
+        logger.warn({ sessionName, err }, 'Error closing WPP session after logout');
+      }
+    }
+
+    this.sessions.delete(sessionName);
+    this.setStatus(sessionName, 'disconnected');
+
+    // Delete persisted tokens so next connect requires a new QR
+    const fs = await import('node:fs/promises');
+    const tokenPaths = [`./tokens/${sessionName}`, `./tokens/${sessionName}-profile`];
+    for (const p of tokenPaths) {
+      try {
+        await fs.rm(p, { recursive: true, force: true });
+        logger.info({ sessionName, path: p }, 'Deleted token directory');
+      } catch {
+        // Ignore — may not exist
+      }
+    }
+
+    logger.info({ sessionName }, 'WPPConnect session logged out (tokens deleted)');
+  }
+
   getStatus(sessionName: string): InstanceStatus {
     return this.statuses.get(sessionName) ?? 'disconnected';
   }
