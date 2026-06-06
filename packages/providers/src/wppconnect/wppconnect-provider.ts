@@ -218,28 +218,28 @@ export class WPPConnectProvider implements ChannelProvider {
         logger.warn({ sessionName, err }, 'Error during WPP logout (may already be logged out)');
       }
 
-      try {
-        await client.close();
-      } catch (err) {
-        logger.warn({ sessionName, err }, 'Error closing WPP session after logout');
+      // Kill browser process FIRST — close() hangs when logout
+      // destroys the execution context mid-navigation
+      if (browserPid) {
+        this.killBrowserTree(sessionName, browserPid);
       }
 
-      // Always kill browser process — close() may succeed but leave zombie
-      if (browserPid) {
-        try {
-          process.kill(browserPid, 'SIGKILL');
-          logger.info({ sessionName, pid: browserPid }, 'Killed browser process');
-        } catch {
-          // Already dead — close() worked
-        }
+      // Attempt close with timeout — may hang, so don't block on it
+      try {
+        await Promise.race([
+          client.close(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('close timeout')), 5000)),
+        ]);
+      } catch {
+        // Expected — browser already killed or close timed out
       }
     }
 
     this.sessions.delete(sessionName);
     this.setStatus(sessionName, 'disconnected');
 
-    // Wait briefly for browser process to fully terminate before deleting tokens
-    await new Promise((r) => setTimeout(r, 1000));
+    // Wait for browser process tree to fully terminate before deleting tokens
+    await new Promise((r) => setTimeout(r, 2000));
 
     // Delete persisted tokens so next connect requires a new QR
     const fs = await import('node:fs/promises');
@@ -254,6 +254,23 @@ export class WPPConnectProvider implements ChannelProvider {
     }
 
     logger.info({ sessionName }, 'WPPConnect session logged out (tokens deleted)');
+  }
+
+  private killBrowserTree(sessionName: string, pid: number): void {
+    const { execSync } = require('node:child_process');
+    try {
+      // Kill entire process tree: children first, then parent
+      execSync(`kill -9 -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 });
+      logger.info({ sessionName, pid }, 'Killed browser process tree');
+    } catch {
+      // Fallback: try Node's process.kill
+      try {
+        process.kill(pid, 'SIGKILL');
+        logger.info({ sessionName, pid }, 'Killed browser process (fallback)');
+      } catch {
+        // Already dead
+      }
+    }
   }
 
   getStatus(sessionName: string): InstanceStatus {
