@@ -92,28 +92,36 @@ export class SessionManager {
     await this.audit(tenantId, instanceId, 'disconnected', { status: 'connected' }, { status: 'disconnected' }, trace);
   }
 
-  async logoutSession(sessionName: string): Promise<void> {
+  async logoutSession(
+    sessionName: string,
+    fallback?: { tenantId: string; instanceId: string },
+  ): Promise<void> {
     const session = this.managedSessions.get(sessionName);
-    if (!session) {
-      logger.warn({ sessionName }, 'No managed session found to logout');
-      return;
-    }
+    const tenantId = session?.tenantId ?? fallback?.tenantId;
+    const instanceId = session?.instanceId ?? fallback?.instanceId;
 
     const trace = createTraceContext();
-    const { tenantId, instanceId } = session;
 
-    logger.info({ sessionName, ...trace }, 'Logging out session (unpair + delete tokens)');
+    logger.info({ sessionName, hasSession: !!session, ...trace }, 'Logging out session (unpair + delete tokens)');
 
-    // Remove FIRST — prevents onStatusChange from triggering auto-reconnect
-    this.managedSessions.delete(sessionName);
+    // Remove from managed sessions if present — prevents auto-reconnect
+    if (session) {
+      this.managedSessions.delete(sessionName);
+    }
 
+    // ALWAYS call provider.logout() — token deletion must happen regardless
     await this.provider.logout(sessionName);
-    await this.updateInstanceStatus(instanceId, 'disconnected', trace, {
-      disconnectedAt: new Date(),
-      qrCode: null,
-      phone: null,
-    });
-    await this.audit(tenantId, instanceId, 'logged_out', { status: 'connected' }, { status: 'disconnected' }, trace);
+
+    if (instanceId) {
+      await this.updateInstanceStatus(instanceId, 'disconnected', trace, {
+        disconnectedAt: new Date(),
+        qrCode: null,
+        phone: null,
+      });
+    }
+    if (tenantId && instanceId) {
+      await this.audit(tenantId, instanceId, 'logged_out', { status: 'connected' }, { status: 'disconnected' }, trace);
+    }
   }
 
   async reconnectSession(sessionName: string): Promise<void> {

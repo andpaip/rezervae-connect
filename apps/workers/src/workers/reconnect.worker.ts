@@ -32,7 +32,7 @@ async function processReconnect(job: Job<ReconnectJob>): Promise<void> {
   // Handle logout requests — unpair + delete tokens
   if (job.data.action === 'logout') {
     logger.info(ctx, 'Processing logout job');
-    await sessionManager.logoutSession(sessionName);
+    await sessionManager.logoutSession(sessionName, { tenantId, instanceId });
     return;
   }
 
