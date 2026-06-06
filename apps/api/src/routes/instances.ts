@@ -103,7 +103,7 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       attempt: 0,
       traceId,
       correlationId,
-    }, { jobId: `connect-${instance.id}` });
+    }, { jobId: `connect-${instance.id}-${Date.now()}` });
 
     await db.insert(auditLogs).values({
       tenantId,

@@ -17,7 +17,13 @@ export const QUEUE_NAMES = {
 } as const;
 
 function createQueue(name: string): Queue {
-  return new Queue(name, { connection: getRedisConnectionOptions() });
+  return new Queue(name, {
+    connection: getRedisConnectionOptions(),
+    defaultJobOptions: {
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 50 },
+    },
+  });
 }
 
 export function getQueues() {
