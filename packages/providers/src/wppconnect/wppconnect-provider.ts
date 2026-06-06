@@ -83,10 +83,16 @@ export class WPPConnectProvider implements ChannelProvider {
     // Extract phone number from connected client
     try {
       const hostDevice = await client.getHostDevice();
-      const wid = (hostDevice as Record<string, unknown>)?.id?.toString()
-        ?? (hostDevice as Record<string, unknown>)?.wid?.toString()
+      logger.info({ sessionName, hostDevice: JSON.stringify(hostDevice).slice(0, 500) }, 'Raw hostDevice');
+
+      // WPPConnect hostDevice.id._serialized contains "5511999999999@c.us"
+      const hd = hostDevice as Record<string, unknown>;
+      const idObj = hd?.id as Record<string, unknown> | undefined;
+      const serialized = idObj?._serialized?.toString()
+        ?? idObj?.user?.toString()
+        ?? hd?.wid?.toString()
         ?? '';
-      const phone = wid.replace('@c.us', '').replace(/\D/g, '');
+      const phone = serialized.replace('@c.us', '').replace(/\D/g, '');
       if (phone) {
         this.phones.set(sessionName, phone);
         logger.info({ sessionName, phone }, 'Phone number captured');
