@@ -13,6 +13,7 @@ import campaignRoutes from './routes/campaigns.js';
 import templateRoutes from './routes/templates.js';
 import auditRoutes from './routes/audit.js';
 import coreEventsRoutes from './routes/core-events.js';
+import settingsRoutes from './routes/settings.js';
 import adminRoutes from './routes/admin.js';
 
 const logger = createLogger('api');
@@ -58,6 +59,7 @@ await app.register(campaignRoutes);
 await app.register(templateRoutes);
 await app.register(auditRoutes);
 await app.register(coreEventsRoutes);
+await app.register(settingsRoutes);
 await app.register(adminRoutes);
 
 const port = Number(process.env.API_PORT ?? 3100);

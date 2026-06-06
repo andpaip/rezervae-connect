@@ -45,9 +45,26 @@ function cleanPhone(cel: string): string {
 }
 
 /**
- * Helper: resolve a session name for a tenant's "send" instance.
+ * Helper: resolve the operational "send" instance for a tenant.
+ * Priority: tenant settings defaultSendInstanceId → fallback instanceName='send'.
  */
-async function resolveSendInstance(tenantId: string) {
+async function resolveSendInstance(tenantId: string, settings?: Record<string, unknown>) {
+  const defaultId = settings?.defaultSendInstanceId as string | undefined;
+
+  if (defaultId) {
+    const [instance] = await db
+      .select()
+      .from(whatsappInstances)
+      .where(
+        and(
+          eq(whatsappInstances.tenantId, tenantId),
+          eq(whatsappInstances.id, defaultId),
+        ),
+      );
+    if (instance) return instance;
+  }
+
+  // Fallback: legacy convention instanceName='send'
   const [instance] = await db
     .select()
     .from(whatsappInstances)
@@ -139,7 +156,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Corpo da requisição inválido ou vazio' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) {
       return reply.code(503).send({ error: 'No send instance available' });
     }
@@ -219,7 +236,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(cliente.celular as string);
@@ -246,7 +263,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(celular);
@@ -273,7 +290,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(celular ?? '');
@@ -300,7 +317,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(celular);
@@ -327,7 +344,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(celular);
@@ -354,7 +371,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Dados do cliente incompletos' });
     }
 
-    const instance = await resolveSendInstance(tenantId);
+    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) return reply.code(503).send({ error: 'No send instance available' });
 
     const phone = cleanPhone(celular);
@@ -378,6 +395,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       to: string;
       content: string;
       type?: 'text' | 'image' | 'list';
+      instanceId?: string;
       imageUrl?: string;
       caption?: string;
       buttonText?: string;
@@ -385,7 +403,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     };
   }>('/api/v1/messages/send-test', async (request, reply) => {
     const { tenantId, traceId, correlationId } = request.tenant;
-    const { to, content, type = 'text', imageUrl, caption, buttonText, sections } = request.body ?? {};
+    const { to, content, type = 'text', instanceId, imageUrl, caption, buttonText, sections } = request.body ?? {};
 
     if (!to || !content) {
       return reply.code(400).send({ error: 'to and content are required' });
@@ -396,16 +414,30 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Número inválido' });
     }
 
-    // Resolve first connected instance for this tenant
-    const [instance] = await db
-      .select()
-      .from(whatsappInstances)
-      .where(
-        and(
-          eq(whatsappInstances.tenantId, tenantId),
-          eq(whatsappInstances.status, 'connected'),
-        ),
-      );
+    // Resolve instance: explicit selection → fallback to first connected
+    let instance: typeof whatsappInstances.$inferSelect | undefined;
+
+    if (instanceId) {
+      [instance] = await db
+        .select()
+        .from(whatsappInstances)
+        .where(
+          and(
+            eq(whatsappInstances.tenantId, tenantId),
+            eq(whatsappInstances.id, instanceId),
+          ),
+        );
+    } else {
+      [instance] = await db
+        .select()
+        .from(whatsappInstances)
+        .where(
+          and(
+            eq(whatsappInstances.tenantId, tenantId),
+            eq(whatsappInstances.status, 'connected'),
+          ),
+        );
+    }
 
     if (!instance) {
       return reply.code(503).send({ error: 'Nenhuma instância conectada' });
