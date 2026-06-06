@@ -54,7 +54,8 @@ export class SessionManager {
     });
 
     await this.updateInstanceStatus(instanceId, 'connecting', trace, { qrCode: null });
-    await this.audit(tenantId, instanceId, 'connecting', null, { status: 'connecting' }, trace);
+    // audit('connecting') is NOT written here — the onStatusChange callback handles it
+    // to avoid duplicate audit entries when provider.connect() also sets status to 'connecting'
 
     const config: ConnectionConfig = { sessionName, tenantId, instanceId };
 
