@@ -368,6 +368,70 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
 
     return reply.code(202).send({ message: 'Message queued', messageLogId: logId });
   });
+
+  /**
+   * POST /api/v1/messages/send-test
+   * Generic test message: text, image, or list.
+   */
+  fastify.post<{
+    Body: {
+      to: string;
+      content: string;
+      type?: 'text' | 'image' | 'list';
+      imageUrl?: string;
+      caption?: string;
+      buttonText?: string;
+      sections?: Array<{ title: string; rows: Array<{ rowId: string; title: string; description?: string }> }>;
+    };
+  }>('/api/v1/messages/send-test', async (request, reply) => {
+    const { tenantId, traceId, correlationId } = request.tenant;
+    const { to, content, type = 'text', imageUrl, caption, buttonText, sections } = request.body ?? {};
+
+    if (!to || !content) {
+      return reply.code(400).send({ error: 'to and content are required' });
+    }
+
+    const phone = cleanPhone(to);
+    if (phone.length < 10) {
+      return reply.code(400).send({ error: 'Número inválido' });
+    }
+
+    // Resolve first connected instance for this tenant
+    const [instance] = await db
+      .select()
+      .from(whatsappInstances)
+      .where(
+        and(
+          eq(whatsappInstances.tenantId, tenantId),
+          eq(whatsappInstances.status, 'connected'),
+        ),
+      );
+
+    if (!instance) {
+      return reply.code(503).send({ error: 'Nenhuma instância conectada' });
+    }
+
+    const fullPhone = phone.startsWith('55') ? phone : `55${phone}`;
+
+    const logId = await enqueueMessage({
+      tenantId,
+      instanceId: instance.id,
+      sessionName: instance.sessionName,
+      to: fullPhone,
+      content,
+      type,
+      imageUrl,
+      caption,
+      buttonText,
+      sections,
+      traceId,
+      correlationId,
+      templateSlug: 'test',
+      payload: { templateSlug: 'test', testMessage: true, type },
+    });
+
+    return reply.code(202).send({ message: 'Test message queued', messageLogId: logId });
+  });
 };
 
 export default messageRoutes;
