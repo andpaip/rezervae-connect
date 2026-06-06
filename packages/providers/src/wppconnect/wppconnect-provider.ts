@@ -26,6 +26,7 @@ const logger = createLogger('wppconnect-provider');
 export class WPPConnectProvider implements ChannelProvider {
   private sessions = new Map<string, WPPClient>();
   private statuses = new Map<string, InstanceStatus>();
+  private phones = new Map<string, string>();
 
   private qrCallbacks: QRCallback[] = [];
   private statusCallbacks: StatusCallback[] = [];
@@ -78,6 +79,22 @@ export class WPPConnectProvider implements ChannelProvider {
     });
 
     this.sessions.set(sessionName, client);
+
+    // Extract phone number from connected client
+    try {
+      const hostDevice = await client.getHostDevice();
+      const wid = (hostDevice as Record<string, unknown>)?.id?.toString()
+        ?? (hostDevice as Record<string, unknown>)?.wid?.toString()
+        ?? '';
+      const phone = wid.replace('@c.us', '').replace(/\D/g, '');
+      if (phone) {
+        this.phones.set(sessionName, phone);
+        logger.info({ sessionName, phone }, 'Phone number captured');
+      }
+    } catch (err) {
+      logger.warn({ sessionName, err }, 'Could not extract phone number');
+    }
+
     this.setStatus(sessionName, 'connected');
 
     // Register incoming message handler
@@ -202,6 +219,10 @@ export class WPPConnectProvider implements ChannelProvider {
 
   getStatus(sessionName: string): InstanceStatus {
     return this.statuses.get(sessionName) ?? 'disconnected';
+  }
+
+  getPhone(sessionName: string): string | null {
+    return this.phones.get(sessionName) ?? null;
   }
 
   onQRCode(callback: QRCallback): void {

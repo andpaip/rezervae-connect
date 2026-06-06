@@ -276,6 +276,10 @@ export class SessionManager {
       if (status === 'connected') {
         updates.connectedAt = new Date();
         session.reconnectAttempts = 0;
+        const phone = this.provider.getPhone(sessionName);
+        if (phone) {
+          updates.phone = phone;
+        }
       }
       if (status === 'disconnected') {
         updates.disconnectedAt = new Date();
