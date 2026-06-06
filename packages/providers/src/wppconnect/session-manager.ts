@@ -53,7 +53,7 @@ export class SessionManager {
       reconnectAttempts: 0,
     });
 
-    await this.updateInstanceStatus(instanceId, 'connecting', trace);
+    await this.updateInstanceStatus(instanceId, 'connecting', trace, { qrCode: null });
     await this.audit(tenantId, instanceId, 'connecting', null, { status: 'connecting' }, trace);
 
     const config: ConnectionConfig = { sessionName, tenantId, instanceId };
@@ -81,13 +81,15 @@ export class SessionManager {
 
     logger.info({ sessionName, ...trace }, 'Disconnecting session');
 
+    // Remove FIRST — prevents onStatusChange from triggering auto-reconnect
+    this.managedSessions.delete(sessionName);
+
     await this.provider.disconnect(sessionName);
     await this.updateInstanceStatus(instanceId, 'disconnected', trace, {
       disconnectedAt: new Date(),
+      qrCode: null,
     });
     await this.audit(tenantId, instanceId, 'disconnected', { status: 'connected' }, { status: 'disconnected' }, trace);
-
-    this.managedSessions.delete(sessionName);
   }
 
   async reconnectSession(sessionName: string): Promise<void> {

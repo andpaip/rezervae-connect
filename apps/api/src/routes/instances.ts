@@ -93,11 +93,8 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(409).send({ error: 'Instance already connected' });
     }
 
-    if (instance.status === 'connecting') {
-      return reply.code(409).send({ error: 'Connection already in progress' });
-    }
-
     // Enqueue reconnect job (workers handle session creation)
+    // jobId dedup prevents duplicate jobs in BullMQ
     const queues = getQueues();
     await queues.reconnect.add('connect', {
       tenantId,
