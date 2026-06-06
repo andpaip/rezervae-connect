@@ -35,9 +35,8 @@ export class WPPConnectProvider implements ChannelProvider {
     const { sessionName, headless = true } = config;
 
     if (this.sessions.has(sessionName)) {
-      logger.warn({ sessionName }, 'Session already connected, skipping');
-      this.setStatus(sessionName, 'connected');
-      return;
+      logger.warn({ sessionName }, 'Cleaning up existing session before reconnect');
+      await this.disconnect(sessionName);
     }
 
     this.setStatus(sessionName, 'connecting');
@@ -94,6 +93,7 @@ export class WPPConnectProvider implements ChannelProvider {
     client.onStateChange((state) => {
       logger.info({ sessionName, state }, 'WPP state change');
       if (state === 'CONFLICT' || state === 'UNPAIRED' || state === 'UNLAUNCHED') {
+        this.sessions.delete(sessionName);
         this.setStatus(sessionName, 'disconnected');
       }
     });

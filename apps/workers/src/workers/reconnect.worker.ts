@@ -10,6 +10,7 @@ export interface ReconnectJob {
   instanceId: string;
   sessionName: string;
   attempt: number;
+  action?: 'disconnect'; // when set, worker disconnects instead of reconnecting
   traceId: string;
   correlationId: string;
 }
@@ -18,14 +19,21 @@ async function processReconnect(job: Job<ReconnectJob>): Promise<void> {
   const { tenantId, instanceId, sessionName, attempt, traceId, correlationId } = job.data;
   const ctx = { tenantId, instanceId, sessionName, attempt, traceId, correlationId, jobId: job.id };
 
+  const { getSessionManager } = await import('../registry.js');
+  const sessionManager = getSessionManager();
+
+  // Handle disconnect requests — clean up session and return
+  if (job.data.action === 'disconnect') {
+    logger.info(ctx, 'Processing disconnect job');
+    await sessionManager.disconnectSession(sessionName);
+    return;
+  }
+
   logger.info(ctx, 'Processing reconnect job');
 
   // SessionManager handles session lifecycle.
   // For new connections (no managed session yet), use createSession.
   // For existing sessions, use reconnectSession.
-  const { getSessionManager } = await import('../registry.js');
-  const sessionManager = getSessionManager();
-
   const hasSession = sessionManager.hasSession?.(sessionName);
   if (hasSession) {
     await sessionManager.reconnectSession(sessionName);

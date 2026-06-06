@@ -93,6 +93,10 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(409).send({ error: 'Instance already connected' });
     }
 
+    if (instance.status === 'connecting') {
+      return reply.code(409).send({ error: 'Connection already in progress' });
+    }
+
     // Enqueue reconnect job (workers handle session creation)
     const queues = getQueues();
     await queues.reconnect.add('connect', {
@@ -102,7 +106,7 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       attempt: 0,
       traceId,
       correlationId,
-    });
+    }, { jobId: `connect-${instance.id}` });
 
     await db.insert(auditLogs).values({
       tenantId,
@@ -146,6 +150,18 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       action: 'disconnect_requested',
       metadata: { traceId, correlationId },
     });
+
+    // Enqueue session cleanup (worker will call sessionManager.disconnectSession)
+    const queues = getQueues();
+    await queues.reconnect.add('disconnect', {
+      tenantId,
+      instanceId: instance.id,
+      sessionName: instance.sessionName,
+      attempt: 0,
+      action: 'disconnect',
+      traceId,
+      correlationId,
+    }, { jobId: `disconnect-${instance.id}-${Date.now()}` });
 
     return reply.code(202).send({ message: 'Disconnection initiated', instanceId: instance.id });
   });
