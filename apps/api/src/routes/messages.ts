@@ -78,6 +78,27 @@ async function resolveSendInstance(tenantId: string, settings?: Record<string, u
 }
 
 /**
+ * Helper: resolve a connected instance by role (from metadata.roles array).
+ * Returns the first connected instance matching the role, or undefined.
+ */
+async function resolveInstanceByRole(tenantId: string, role: string) {
+  const instances = await db
+    .select()
+    .from(whatsappInstances)
+    .where(
+      and(
+        eq(whatsappInstances.tenantId, tenantId),
+        eq(whatsappInstances.status, 'connected'),
+      ),
+    );
+
+  return instances.find(i => {
+    const roles = (i.metadata as Record<string, unknown> | null)?.roles;
+    return Array.isArray(roles) && roles.includes(role);
+  });
+}
+
+/**
  * Helper: create a message log and enqueue a send-message job.
  */
 async function enqueueMessage(opts: {
@@ -156,7 +177,10 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: 'Corpo da requisição inválido ou vazio' });
     }
 
-    const instance = await resolveSendInstance(tenantId, request.tenant.settings);
+    // Resolve instance: role-based → settings-based → legacy name-based
+    const instance =
+      await resolveInstanceByRole(tenantId, 'confirmacao') ??
+      await resolveSendInstance(tenantId, request.tenant.settings);
     if (!instance) {
       return reply.code(503).send({ error: 'No send instance available' });
     }

@@ -10,3 +10,4 @@ export * from './tenant-features.js';
 export * from './usage-events.js';
 export * from './inbox.js';
 export * from './media.js';
+export * from './absence-rules.js';
