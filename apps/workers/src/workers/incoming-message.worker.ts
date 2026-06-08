@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnectionOptions, getRedisClient, getQueues, QUEUE_NAMES } from '@rezervae-connect/queue';
 import { db, auditLogs, whatsappInstances } from '@rezervae-connect/database';
 import { createLogger } from '@rezervae-connect/shared';
@@ -32,6 +32,46 @@ const CONFIRMATION_ACTIONS: Record<string, { action: string; reply: string }> = 
 };
 
 const DEDUP_TTL = 90_000; // 25 hours in seconds
+
+/**
+ * Resolve the real phone number for auto-reply.
+ * WPPConnect v2 sends `from` as @lid (internal WhatsApp ID), not the phone.
+ * Falls back to: (1) original outbound confirmation recipient, (2) raw `from` if it looks numeric.
+ */
+async function resolveReplyPhone(tenantId: string, visitUuid: string, rawFrom: string): Promise<string | null> {
+  // Always try message_logs first — WPPConnect v2 `from` is a LID (internal ID),
+  // not the phone number, even when it looks numeric.
+  try {
+    const { messageLogs } = await import('@rezervae-connect/database');
+    const rows = await db
+      .select({ recipient: messageLogs.recipient })
+      .from(messageLogs)
+      .where(and(
+        eq(messageLogs.tenantId, tenantId),
+        eq(messageLogs.direction, 'outbound'),
+        eq(messageLogs.status, 'sent'),
+        sql`${messageLogs.payload}->>'id_comanda' = ${visitUuid}`,
+      ))
+      .orderBy(sql`${messageLogs.createdAt} DESC`)
+      .limit(1);
+
+    if (rows[0]?.recipient) {
+      logger.info({ visitUuid, phone: rows[0].recipient, rawFrom }, 'Resolved phone from original confirmation');
+      return rows[0].recipient;
+    }
+  } catch (err) {
+    logger.warn({ visitUuid, err }, 'Failed to resolve phone from message_logs');
+  }
+
+  // Fallback: if rawFrom looks like a real BR phone (starts with 55, 12-13 digits)
+  const stripped = rawFrom.replace(/@.*$/, '');
+  if (/^55\d{10,11}$/.test(stripped)) {
+    return stripped;
+  }
+
+  logger.warn({ visitUuid, rawFrom }, 'Could not resolve real phone number');
+  return null;
+}
 
 /**
  * Check if the instance has listening enabled in metadata.
@@ -84,6 +124,14 @@ async function handleListResponse(data: IncomingMessageJob, selectedRowId: strin
     return;
   }
 
+  // Resolve the real phone number for auto-reply.
+  // WPPConnect v2 sends `from` as @lid (internal WhatsApp ID), not the phone number.
+  // Look up the original outbound confirmation message to get the real phone.
+  const replyTo = await resolveReplyPhone(tenantId, visitUuid, from);
+  if (!replyTo) {
+    logger.warn({ ...ctx, visitUuid }, 'Could not resolve phone for auto-reply, skipping reply');
+  }
+
   // Dedup check via Redis (25h TTL — same as legacy)
   const redis = getRedisClient();
   const dedupKey = `confirmation:${visitUuid}`;
@@ -91,12 +139,16 @@ async function handleListResponse(data: IncomingMessageJob, selectedRowId: strin
 
   if (!already) {
     logger.info({ ...ctx, visitUuid }, 'Duplicate confirmation response, sending ack');
-    await enqueueAutoReply(tenantId, sessionName, from, 'Essa confirmação já foi respondida anteriormente.', traceId, correlationId);
+    if (replyTo) {
+      await enqueueAutoReply(tenantId, sessionName, replyTo, 'Essa confirmação já foi respondida anteriormente.', traceId, correlationId);
+    }
     return;
   }
 
   // Send auto-reply to customer
-  await enqueueAutoReply(tenantId, sessionName, from, actionDef.reply, traceId, correlationId);
+  if (replyTo) {
+    await enqueueAutoReply(tenantId, sessionName, replyTo, actionDef.reply, traceId, correlationId);
+  }
 
   // Notify Core via webhook-delivery queue (reuses existing webhooks endpoint)
   const queues = getQueues();

@@ -93,10 +93,11 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(409).send({ error: 'Instance already connected' });
     }
 
-    // Clear stale QR and set connecting status synchronously (before worker processes)
+    // Clear stale QR, reset reconnect counter, and set connecting status synchronously
     await db.update(whatsappInstances).set({
       status: 'connecting',
       qrCode: null,
+      reconnectCount: 0,
     }).where(eq(whatsappInstances.id, instance.id));
 
     // Enqueue reconnect job (workers handle session creation)

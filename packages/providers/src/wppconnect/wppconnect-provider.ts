@@ -234,6 +234,10 @@ export class WPPConnectProvider implements ChannelProvider {
       } catch {
         // Expected — browser already killed or close timed out
       }
+    } else {
+      // Client not in memory — try to kill orphan Chrome by userDataDir
+      logger.warn({ sessionName }, 'No client in memory, attempting orphan browser cleanup');
+      await this.killOrphanBrowser(sessionName);
     }
 
     this.sessions.delete(sessionName);
@@ -242,7 +246,13 @@ export class WPPConnectProvider implements ChannelProvider {
     // Wait for browser process tree to fully terminate before deleting tokens
     await new Promise((r) => setTimeout(r, 2000));
 
-    // Delete persisted tokens so next connect requires a new QR
+    // Always cleanup tokens/profile regardless of client state
+    await this.cleanupTokenDirs(sessionName);
+
+    logger.info({ sessionName }, 'WPPConnect session logged out (tokens deleted)');
+  }
+
+  private async cleanupTokenDirs(sessionName: string): Promise<void> {
     const fs = await import('node:fs/promises');
     const tokenPaths = [`./tokens/${sessionName}`, `./tokens/${sessionName}-profile`];
     for (const p of tokenPaths) {
@@ -253,14 +263,56 @@ export class WPPConnectProvider implements ChannelProvider {
         // Ignore — may not exist
       }
     }
+  }
 
-    logger.info({ sessionName }, 'WPPConnect session logged out (tokens deleted)');
+  private async killOrphanBrowser(sessionName: string): Promise<void> {
+    const profileDir = `${sessionName}-profile`;
+    const isWindows = process.platform === 'win32';
+    try {
+      if (isWindows) {
+        // Find Chrome processes with matching userDataDir via WMIC
+        const output = execSync(
+          `wmic process where "name='chrome.exe' and commandline like '%${profileDir}%'" get processid /format:list`,
+          { timeout: 5000, encoding: 'utf-8' },
+        );
+        const pids = output.match(/ProcessId=(\d+)/g)?.map((m) => m.split('=')[1]) ?? [];
+        for (const pid of pids) {
+          try {
+            execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000 });
+            logger.info({ sessionName, pid }, 'Killed orphan Chrome (Windows)');
+          } catch {
+            // Already dead
+          }
+        }
+      } else {
+        // Linux: find Chrome with matching userDataDir
+        const output = execSync(
+          `ps aux | grep "[c]hrome.*${profileDir}" | awk '{print $2}'`,
+          { timeout: 5000, encoding: 'utf-8' },
+        );
+        const pids = output.trim().split('\n').filter(Boolean);
+        for (const pid of pids) {
+          try {
+            execSync(`kill -9 ${pid}`, { timeout: 3000 });
+            logger.info({ sessionName, pid }, 'Killed orphan Chrome (Linux)');
+          } catch {
+            // Already dead
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ sessionName, err }, 'Orphan browser cleanup failed (may be none running)');
+    }
   }
 
   private killBrowserTree(sessionName: string, pid: number): void {
+    const isWindows = process.platform === 'win32';
     try {
-      // Kill entire process tree: children first, then parent
-      execSync(`kill -9 -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 });
+      if (isWindows) {
+        execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000 });
+      } else {
+        execSync(`kill -9 -${pid} 2>/dev/null; kill -9 ${pid} 2>/dev/null`, { timeout: 3000 });
+      }
       logger.info({ sessionName, pid }, 'Killed browser process tree');
     } catch {
       // Fallback: try Node's process.kill
@@ -329,14 +381,14 @@ export class WPPConnectProvider implements ChannelProvider {
 
   private mapToRawMessage(sessionName: string, msg: unknown): RawIncomingMessage | null {
     const m = msg as Record<string, unknown>;
-    // Skip non-real messages (status broadcasts, groups, self-sent)
+    // Skip non-real messages (status broadcasts, groups)
     if (!m.from || (m.from as string).includes('status@broadcast')) return null;
     if (m.isGroupMsg) return null;
     if (m.fromMe) return null;
 
     return {
-      from: (m.from as string).replace('@c.us', ''),
-      to: (m.to as string)?.replace('@c.us', '') ?? sessionName,
+      from: (m.from as string).replace(/@(c\.us|lid)$/, ''),
+      to: (m.to as string)?.replace(/@(c\.us|lid)$/, '') ?? sessionName,
       body: (m.body as string) ?? '',
       type: (m.type as string) ?? 'chat',
       isGroupMsg: false,

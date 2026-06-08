@@ -8,6 +8,7 @@ import {
   createTraceContext,
   type InstanceStatus,
   type ConnectionConfig,
+  type RawIncomingMessage,
 } from '@rezervae-connect/shared';
 import { WPPConnectProvider } from './wppconnect-provider.js';
 
@@ -25,10 +26,13 @@ interface ManagedSession {
   lastQrHash?: string;
 }
 
+export type IncomingMessageHook = (tenantId: string, sessionName: string, message: RawIncomingMessage) => void | Promise<void>;
+
 export class SessionManager {
   private provider: WPPConnectProvider;
   private managedSessions = new Map<string, ManagedSession>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private incomingMessageHooks: IncomingMessageHook[] = [];
 
   constructor(provider: WPPConnectProvider) {
     this.provider = provider;
@@ -36,6 +40,14 @@ export class SessionManager {
   }
 
   // --- Public API ---
+
+  /**
+   * Register a hook that receives ALL incoming messages with full raw data.
+   * Used by Workers to enqueue to the incoming-message BullMQ queue.
+   */
+  onIncomingMessage(hook: IncomingMessageHook): void {
+    this.incomingMessageHooks.push(hook);
+  }
 
   hasSession(sessionName: string): boolean {
     return this.managedSessions.has(sessionName);
@@ -338,6 +350,15 @@ export class SessionManager {
           messageType: message.type,
         },
       });
+
+      // Invoke hooks (Workers uses this to enqueue to incoming-message queue)
+      for (const hook of this.incomingMessageHooks) {
+        try {
+          await hook(session.tenantId, sessionName, message);
+        } catch (err) {
+          logger.error({ err, sessionName, from: message.from }, 'Incoming message hook failed');
+        }
+      }
     });
   }
 

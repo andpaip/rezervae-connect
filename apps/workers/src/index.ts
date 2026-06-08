@@ -1,6 +1,7 @@
 import 'dotenv/config';
-import { createLogger } from '@rezervae-connect/shared';
+import { createLogger, createTraceContext } from '@rezervae-connect/shared';
 import { WPPConnectProvider, SessionManager } from '@rezervae-connect/providers';
+import { getQueues } from '@rezervae-connect/queue';
 import { setProvider, setSessionManager } from './registry.js';
 import { createSendMessageWorker } from './workers/send-message.worker.js';
 import { createIncomingMessageWorker } from './workers/incoming-message.worker.js';
@@ -32,6 +33,27 @@ const workers = [
 
 // Subscribe events → Core webhooks
 setupCoreWebhookSubscriptions();
+
+// Bridge: incoming WhatsApp messages → BullMQ incoming-message queue
+sessionManager.onIncomingMessage(async (tenantId, sessionName, message) => {
+  const trace = createTraceContext();
+  const queues = getQueues();
+  await queues.incomingMessage.add('incoming', {
+    tenantId,
+    sessionName,
+    from: message.from,
+    to: message.to,
+    body: message.body,
+    messageType: message.type,
+    isGroupMsg: message.isGroupMsg,
+    senderName: message.sender?.pushname,
+    listResponse: message.listResponse,
+    timestamp: message.timestamp,
+    providerMessageId: message.id,
+    traceId: trace.traceId,
+    correlationId: trace.correlationId,
+  });
+});
 
 // Start heartbeat
 sessionManager.startHeartbeat();

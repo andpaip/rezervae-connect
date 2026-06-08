@@ -41,7 +41,8 @@ interface SingleMessageBody {
 }
 
 function cleanPhone(cel: string): string {
-  return String(cel).replace(/\D/g, '');
+  const digits = String(cel).replace(/\D/g, '');
+  return digits.startsWith('55') ? digits : `55${digits}`;
 }
 
 /**
@@ -193,7 +194,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       const phone = cleanPhone(item.cel);
       await enqueueMessage({
         tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-        to: `55${phone}`, content: '', type: 'list',
+        to: phone, content: '', type: 'list',
         traceId, correlationId, templateSlug: 'confirmation',
         buttonText: 'Confirmar Presença',
         sections: [{
@@ -216,7 +217,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
         const phone = cleanPhone(item.cel);
         await enqueueMessage({
           tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-          to: `55${phone}`, content: '', type: 'text',
+          to: phone, content: '', type: 'text',
           traceId, correlationId, templateSlug: 'ausencia',
           payload: { ...item, msgs: ausencias!.msgs, templateSlug: 'ausencia' },
         });
@@ -231,7 +232,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
         const phone = cleanPhone(item.cel);
         await enqueueMessage({
           tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-          to: `55${phone}`, content: '', type: 'text',
+          to: phone, content: '', type: 'text',
           traceId, correlationId, templateSlug: 'nao-atendida',
           payload: { ...item, msgs: naoAtendidas!.msgs, templateSlug: 'nao-atendida' },
         });
@@ -266,7 +267,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(cliente.celular as string);
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'schedule.png', caption: '',
       traceId, correlationId, templateSlug: 'schedule',
       payload: { ...dados, templateSlug: 'schedule' },
@@ -293,7 +294,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(celular);
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'rating.png', caption: '',
       traceId, correlationId, templateSlug: 'pesquisa',
       payload: { nome, celular, templateSlug: 'pesquisa' },
@@ -320,7 +321,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(celular ?? '');
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'app.png', caption: '',
       traceId, correlationId, templateSlug: 'app-confirmation',
       payload: { ...dados, templateSlug: 'app-confirmation' },
@@ -347,7 +348,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(celular);
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'voucher.png', caption: '',
       traceId, correlationId, templateSlug: 'voucher-confirmation',
       payload: { ...dados, templateSlug: 'voucher-confirmation' },
@@ -374,7 +375,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(celular);
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'schedule.png', caption: '',
       traceId, correlationId, templateSlug: 'reset-senha',
       payload: { nome, celular, token, cliente_id, templateSlug: 'reset-senha' },
@@ -401,7 +402,7 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
     const phone = cleanPhone(celular);
     const logId = await enqueueMessage({
       tenantId, instanceId: instance.id, sessionName: instance.sessionName,
-      to: `55${phone}`, content: '', type: 'image',
+      to: phone, content: '', type: 'image',
       imageUrl: 'local.png', caption: '',
       traceId, correlationId, templateSlug: 'local',
       payload: { ...dados, templateSlug: 'local' },
@@ -467,13 +468,11 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(503).send({ error: 'Nenhuma instância conectada' });
     }
 
-    const fullPhone = phone.startsWith('55') ? phone : `55${phone}`;
-
     const logId = await enqueueMessage({
       tenantId,
       instanceId: instance.id,
       sessionName: instance.sessionName,
-      to: fullPhone,
+      to: phone,
       content,
       type,
       imageUrl,

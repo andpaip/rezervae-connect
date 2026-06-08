@@ -158,7 +158,13 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
       }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      result = { success: false, error };
+      // WPPConnect @lid resolution error is expected — message was sent successfully
+      if (error.includes('No LID for user')) {
+        logger.info({ jobId: job.id, to }, 'Ignoring @lid error — message likely sent');
+        result = { success: true, providerMessageId: undefined };
+      } else {
+        result = { success: false, error };
+      }
     }
 
     // Update message_logs
