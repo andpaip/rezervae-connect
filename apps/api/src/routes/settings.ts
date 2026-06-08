@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db, tenants, whatsappInstances } from '@rezervae-connect/database';
+import { getRedisClient } from '@rezervae-connect/queue';
 
 const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
@@ -23,6 +24,18 @@ const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.patch<{ Body: Record<string, unknown> }>('/api/v1/settings', async (request, reply) => {
     const { tenantId } = request.tenant;
     const body = request.body ?? {};
+
+    // Validate sendIntervalMs (anti-ban floor: 15s minimum)
+    if (body.sendIntervalMs !== undefined) {
+      const val = Number(body.sendIntervalMs);
+      if (isNaN(val) || val < 15000) {
+        return reply.code(400).send({ error: 'sendIntervalMs must be >= 15000 (15s minimum)' });
+      }
+      body.sendIntervalMs = val;
+      // Invalidate worker cache so new interval takes effect
+      const redis = getRedisClient();
+      await redis.del(`tenant-interval:${tenantId}`);
+    }
 
     // Validate defaultSendInstanceId belongs to this tenant
     if (body.defaultSendInstanceId) {

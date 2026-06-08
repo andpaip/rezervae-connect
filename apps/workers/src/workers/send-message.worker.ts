@@ -1,7 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { getRedisConnectionOptions, getRedisClient, QUEUE_NAMES } from '@rezervae-connect/queue';
-import { db, messageLogs, auditLogs } from '@rezervae-connect/database';
+import { db, messageLogs, auditLogs, tenants } from '@rezervae-connect/database';
 import { eventBus } from '@rezervae-connect/events';
 import { createLogger, type SendResult } from '@rezervae-connect/shared';
 
@@ -10,9 +10,10 @@ const logger = createLogger('send-message-worker');
 // --- Per-instance rate limiting (anti-ban) ---
 // Sequential sends per WhatsApp number with human-like delays.
 // Worker runs with concurrency=1 for guaranteed serialization — no race conditions.
-const SEND_INTERVAL_MS = 15_000; // 15s base between msgs on same instance
-const JITTER_MAX_MS = 8_000;     // 0-8s random jitter on top (total: 15-23s)
-const DAILY_LIMIT = 300;         // max msgs per instance per day
+const MIN_SEND_INTERVAL_MS = 15_000;     // floor — never go below this (anti-ban safety)
+const DEFAULT_SEND_INTERVAL_MS = 15_000; // default when tenant has no custom setting
+const JITTER_MAX_MS = 8_000;             // 0-8s random jitter on top
+const DAILY_LIMIT = 300;                 // max msgs per instance per day
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,22 +39,41 @@ export interface SendMessageJob {
 }
 
 /**
+ * Resolve the send interval for a tenant from settings (cached in Redis 5min).
+ * Always enforces MIN_SEND_INTERVAL_MS floor for anti-ban safety.
+ */
+async function getTenantSendInterval(tenantId: string): Promise<number> {
+  const redis = getRedisClient();
+  const cacheKey = `tenant-interval:${tenantId}`;
+
+  const cached = await redis.get(cacheKey);
+  if (cached) return Math.max(parseInt(cached, 10), MIN_SEND_INTERVAL_MS);
+
+  const [tenant] = await db.select({ settings: tenants.settings }).from(tenants).where(eq(tenants.id, tenantId));
+  const interval = (tenant?.settings as Record<string, unknown>)?.sendIntervalMs as number | undefined;
+  const value = Math.max(interval ?? DEFAULT_SEND_INTERVAL_MS, MIN_SEND_INTERVAL_MS);
+
+  await redis.set(cacheKey, value.toString(), 'EX', 300);
+  return value;
+}
+
+/**
  * Enforce minimum interval between sends on the same instance.
  * With concurrency=1 there are no race conditions — each job waits for the
  * previous one to finish before starting. The Redis timestamp is a safety net
  * that survives worker restarts.
  */
-async function enforceRateLimit(instanceId: string): Promise<void> {
+async function enforceRateLimit(instanceId: string, intervalMs: number): Promise<void> {
   const redis = getRedisClient();
   const lastKey = `send-last:${instanceId}`;
 
   const lastSent = await redis.get(lastKey);
   if (lastSent) {
     const elapsed = Date.now() - parseInt(lastSent, 10);
-    if (elapsed < SEND_INTERVAL_MS) {
+    if (elapsed < intervalMs) {
       const jitter = Math.floor(Math.random() * JITTER_MAX_MS);
-      const waitMs = SEND_INTERVAL_MS - elapsed + jitter;
-      logger.info({ instanceId, waitMs, elapsed }, 'Anti-ban: waiting before send');
+      const waitMs = intervalMs - elapsed + jitter;
+      logger.info({ instanceId, waitMs, elapsed, intervalMs }, 'Anti-ban: waiting before send');
       await sleep(waitMs);
     }
   }
@@ -102,7 +122,8 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
   }
 
   // Enforce anti-ban interval (concurrency=1 guarantees no parallel sends)
-  await enforceRateLimit(instanceId);
+  const intervalMs = await getTenantSendInterval(tenantId);
+  await enforceRateLimit(instanceId, intervalMs);
 
   const { getProvider } = await import('../registry.js');
   const provider = getProvider();
