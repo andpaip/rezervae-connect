@@ -8,11 +8,11 @@ import { createLogger, type SendResult } from '@rezervae-connect/shared';
 const logger = createLogger('send-message-worker');
 
 // --- Per-instance rate limiting (anti-ban) ---
-// Mirrors the legacy pinkmeupbot pattern: sequential sends per number with human-like delays.
-// Different instances (different WhatsApp numbers) send in parallel.
-const SEND_INTERVAL_MS = 12_000; // 12s base between msgs on same number (legacy uses 15s)
-const JITTER_MAX_MS = 6_000;     // 0-6s random jitter on top
-const DAILY_LIMIT = 300;         // max msgs per instance per day (same as legacy)
+// Sequential sends per WhatsApp number with human-like delays.
+// Worker runs with concurrency=1 for guaranteed serialization — no race conditions.
+const SEND_INTERVAL_MS = 15_000; // 15s base between msgs on same instance
+const JITTER_MAX_MS = 8_000;     // 0-8s random jitter on top (total: 15-23s)
+const DAILY_LIMIT = 300;         // max msgs per instance per day
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,46 +38,28 @@ export interface SendMessageJob {
 }
 
 /**
- * Per-instance rate limiter.
- * Acquires a Redis lock so only 1 message sends at a time per WhatsApp number,
- * then enforces a minimum interval + random jitter between sends.
+ * Enforce minimum interval between sends on the same instance.
+ * With concurrency=1 there are no race conditions — each job waits for the
+ * previous one to finish before starting. The Redis timestamp is a safety net
+ * that survives worker restarts.
  */
-async function acquireInstanceSlot(instanceId: string): Promise<void> {
+async function enforceRateLimit(instanceId: string): Promise<void> {
   const redis = getRedisClient();
-  const lockKey = `send-lock:${instanceId}`;
   const lastKey = `send-last:${instanceId}`;
 
-  // Spin until we acquire the per-instance lock (max 2min TTL as safety)
-  let acquired = false;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const ok = await redis.set(lockKey, '1', 'EX', 120, 'NX');
-    if (ok) { acquired = true; break; }
-    await sleep(2000); // Another msg is sending on this instance, wait
-  }
-
-  if (!acquired) {
-    // Force-acquire after timeout (safety — lock TTL should have expired)
-    await redis.set(lockKey, '1', 'EX', 120);
-    logger.warn({ instanceId }, 'Force-acquired send lock after timeout');
-  }
-
-  // Enforce minimum interval since last send on this instance
   const lastSent = await redis.get(lastKey);
   if (lastSent) {
     const elapsed = Date.now() - parseInt(lastSent, 10);
     if (elapsed < SEND_INTERVAL_MS) {
       const jitter = Math.floor(Math.random() * JITTER_MAX_MS);
       const waitMs = SEND_INTERVAL_MS - elapsed + jitter;
-      logger.info({ instanceId, waitMs }, 'Rate limit: waiting before send');
+      logger.info({ instanceId, waitMs, elapsed }, 'Anti-ban: waiting before send');
       await sleep(waitMs);
     }
   }
-}
 
-async function releaseInstanceSlot(instanceId: string): Promise<void> {
-  const redis = getRedisClient();
-  await redis.set(`send-last:${instanceId}`, Date.now().toString(), 'EX', 86400);
-  await redis.del(`send-lock:${instanceId}`);
+  // Stamp BEFORE send — even if send fails, next message respects the interval
+  await redis.set(lastKey, Date.now().toString(), 'EX', 86400);
 }
 
 async function checkDailyLimit(instanceId: string): Promise<boolean> {
@@ -90,7 +72,6 @@ async function checkDailyLimit(instanceId: string): Promise<boolean> {
 
   if (count > DAILY_LIMIT) {
     logger.warn({ instanceId, count, limit: DAILY_LIMIT }, 'Daily send limit reached for instance');
-    // Decrement back since we won't actually send
     await redis.decr(dailyKey);
     return false;
   }
@@ -110,7 +91,7 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
     return { success: true };
   }
 
-  // Check daily limit before acquiring lock
+  // Check daily limit
   const withinLimit = await checkDailyLimit(instanceId);
   if (!withinLimit) {
     await db.update(messageLogs).set({
@@ -120,106 +101,102 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
     throw new Error('Daily send limit reached');
   }
 
-  // Acquire per-instance slot (sequential sending per WhatsApp number)
-  await acquireInstanceSlot(instanceId);
+  // Enforce anti-ban interval (concurrency=1 guarantees no parallel sends)
+  await enforceRateLimit(instanceId);
+
+  const { getProvider } = await import('../registry.js');
+  const provider = getProvider();
+
+  let result: SendResult;
 
   try {
-    const { getProvider } = await import('../registry.js');
-    const provider = getProvider();
-
-    let result: SendResult;
-
-    try {
-      switch (type) {
-        case 'image':
-          result = await provider.sendImage({
-            sessionName,
-            to,
-            content: job.data.caption ?? '',
-            imageUrl: job.data.imageUrl!,
-            caption: job.data.caption ?? '',
-          });
-          break;
-        case 'list':
-          result = await provider.sendListMessage({
-            sessionName,
-            to,
-            content: job.data.content,
-            buttonText: job.data.buttonText!,
-            sections: job.data.sections!,
-          });
-          break;
-        default:
-          result = await provider.sendMessage({
-            sessionName,
-            to,
-            content: job.data.content,
-          });
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      // WPPConnect @lid resolution error is expected — message was sent successfully
-      if (error.includes('No LID for user')) {
-        logger.info({ jobId: job.id, to }, 'Ignoring @lid error — message likely sent');
-        result = { success: true, providerMessageId: undefined };
-      } else {
-        result = { success: false, error };
-      }
+    switch (type) {
+      case 'image':
+        result = await provider.sendImage({
+          sessionName,
+          to,
+          content: job.data.caption ?? '',
+          imageUrl: job.data.imageUrl!,
+          caption: job.data.caption ?? '',
+        });
+        break;
+      case 'list':
+        result = await provider.sendListMessage({
+          sessionName,
+          to,
+          content: job.data.content,
+          buttonText: job.data.buttonText!,
+          sections: job.data.sections!,
+        });
+        break;
+      default:
+        result = await provider.sendMessage({
+          sessionName,
+          to,
+          content: job.data.content,
+        });
     }
-
-    // Update message_logs
-    if (result.success) {
-      await db.update(messageLogs).set({
-        status: 'sent',
-        providerMessageId: result.providerMessageId,
-        sentAt: new Date(),
-      }).where(eq(messageLogs.id, messageLogId));
-
-      eventBus.emit({
-        type: 'message.sent',
-        tenantId,
-        traceId,
-        correlationId,
-        timestamp: new Date().toISOString(),
-        version: '1.0',
-        data: { messageLogId, to, status: 'sent' },
-      });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    // WPPConnect @lid resolution error is expected — message was sent successfully
+    if (error.includes('No LID for user')) {
+      logger.info({ jobId: job.id, to }, 'Ignoring @lid error — message likely sent');
+      result = { success: true, providerMessageId: undefined };
     } else {
-      await db.update(messageLogs).set({
-        status: 'failed',
-        error: result.error,
-      }).where(eq(messageLogs.id, messageLogId));
-
-      eventBus.emit({
-        type: 'message.failed',
-        tenantId,
-        traceId,
-        correlationId,
-        timestamp: new Date().toISOString(),
-        version: '1.0',
-        data: { messageLogId, to, error: result.error ?? 'unknown' },
-      });
+      result = { success: false, error };
     }
-
-    // Audit
-    await db.insert(auditLogs).values({
-      tenantId,
-      actor: 'worker',
-      entityType: 'message',
-      entityId: messageLogId,
-      action: result.success ? 'sent' : 'failed',
-      newState: { status: result.success ? 'sent' : 'failed', providerMessageId: result.providerMessageId },
-      metadata: { traceId, correlationId, jobId: job.id },
-    });
-
-    if (!result.success) {
-      throw new Error(result.error ?? 'Send failed');
-    }
-
-    return result;
-  } finally {
-    await releaseInstanceSlot(instanceId);
   }
+
+  // Update message_logs
+  if (result.success) {
+    await db.update(messageLogs).set({
+      status: 'sent',
+      providerMessageId: result.providerMessageId,
+      sentAt: new Date(),
+    }).where(eq(messageLogs.id, messageLogId));
+
+    eventBus.emit({
+      type: 'message.sent',
+      tenantId,
+      traceId,
+      correlationId,
+      timestamp: new Date().toISOString(),
+      version: '1.0',
+      data: { messageLogId, to, status: 'sent' },
+    });
+  } else {
+    await db.update(messageLogs).set({
+      status: 'failed',
+      error: result.error,
+    }).where(eq(messageLogs.id, messageLogId));
+
+    eventBus.emit({
+      type: 'message.failed',
+      tenantId,
+      traceId,
+      correlationId,
+      timestamp: new Date().toISOString(),
+      version: '1.0',
+      data: { messageLogId, to, error: result.error ?? 'unknown' },
+    });
+  }
+
+  // Audit
+  await db.insert(auditLogs).values({
+    tenantId,
+    actor: 'worker',
+    entityType: 'message',
+    entityId: messageLogId,
+    action: result.success ? 'sent' : 'failed',
+    newState: { status: result.success ? 'sent' : 'failed', providerMessageId: result.providerMessageId },
+    metadata: { traceId, correlationId, jobId: job.id },
+  });
+
+  if (!result.success) {
+    throw new Error(result.error ?? 'Send failed');
+  }
+
+  return result;
 }
 
 export function createSendMessageWorker() {
@@ -228,8 +205,7 @@ export function createSendMessageWorker() {
     processSendMessage,
     {
       connection: getRedisConnectionOptions(),
-      concurrency: 10, // High global concurrency — parallel across different instances
-      // No global limiter — rate limiting is per-instance via Redis locks
+      concurrency: 1, // Sequential processing — anti-ban without race conditions
     },
   );
 
