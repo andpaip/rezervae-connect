@@ -531,6 +531,8 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
       recipient: messageLogs.recipient,
       direction: messageLogs.direction,
       status: messageLogs.status,
+      sourceType: messageLogs.sourceType,
+      scheduledFor: messageLogs.scheduledFor,
       error: messageLogs.error,
       payload: messageLogs.payload,
       queuedAt: messageLogs.queuedAt,
