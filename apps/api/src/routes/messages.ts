@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, sql, gte, lte } from 'drizzle-orm';
 import { db, messageLogs, whatsappInstances, auditLogs } from '@rezervae-connect/database';
 import { getQueues } from '@rezervae-connect/queue';
 import { createLogger } from '@rezervae-connect/shared';
@@ -120,17 +120,25 @@ async function enqueueMessage(opts: {
   }>;
   templateSlug?: string;
   payload?: Record<string, unknown>;
+  delayMs?: number;
+  scheduledFor?: Date;
+  sourceType?: string;
+  priority?: number;
 }) {
+  const isScheduled = opts.delayMs != null && opts.delayMs > 0;
+
   const [log] = await db.insert(messageLogs).values({
     tenantId: opts.tenantId,
     instanceId: opts.instanceId,
     channel: 'whatsapp',
     direction: 'outbound',
-    status: 'queued',
+    status: isScheduled ? 'scheduled' : 'queued',
     recipient: opts.to,
     payload: opts.payload ?? {},
     traceId: opts.traceId,
     correlationId: opts.correlationId,
+    sourceType: opts.sourceType ?? null,
+    scheduledFor: opts.scheduledFor ?? null,
     queuedAt: new Date(),
   }).returning();
 
@@ -152,6 +160,8 @@ async function enqueueMessage(opts: {
   }, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 15_000 },
+    ...(isScheduled ? { delay: opts.delayMs } : {}),
+    ...(opts.priority ? { priority: opts.priority } : {}),
   });
 
   return log.id;
@@ -487,6 +497,266 @@ const messageRoutes: FastifyPluginAsync = async (fastify) => {
 
     return reply.code(202).send({ message: 'Test message queued', messageLogId: logId });
   });
+
+  /**
+   * GET /api/v1/messages
+   * List message logs for the tenant (Envios panel).
+   */
+  fastify.get<{
+    Querystring: {
+      status?: string;
+      direction?: string;
+      source?: string;
+      from?: string;
+      to?: string;
+      limit?: string;
+      offset?: string;
+    };
+  }>('/api/v1/messages', async (request) => {
+    const { tenantId } = request.tenant;
+    const { status, direction, source, from, to, limit: limitStr, offset: offsetStr } = request.query ?? {};
+    const limit = Math.min(Number(limitStr) || 50, 200);
+    const offset = Number(offsetStr) || 0;
+
+    const conditions = [eq(messageLogs.tenantId, tenantId)];
+
+    if (status) conditions.push(eq(messageLogs.status, status));
+    if (direction) conditions.push(eq(messageLogs.direction, direction));
+    if (source) conditions.push(sql`${messageLogs.payload}->>'templateSlug' = ${source}`);
+    if (from) conditions.push(gte(messageLogs.createdAt, new Date(from)));
+    if (to) conditions.push(lte(messageLogs.createdAt, new Date(to)));
+
+    const rows = await db.select({
+      id: messageLogs.id,
+      recipient: messageLogs.recipient,
+      direction: messageLogs.direction,
+      status: messageLogs.status,
+      error: messageLogs.error,
+      payload: messageLogs.payload,
+      queuedAt: messageLogs.queuedAt,
+      sentAt: messageLogs.sentAt,
+      createdAt: messageLogs.createdAt,
+    }).from(messageLogs)
+      .where(and(...conditions))
+      .orderBy(desc(messageLogs.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return { data: rows, meta: { limit, offset } };
+  });
+
+  // ─── Scheduling helpers ───────────────────────────────────────────
+
+  function addJitterMinutes(date: Date, maxMinutes = 10): Date {
+    const jitter = Math.floor(Math.random() * maxMinutes * 60 * 1000);
+    return new Date(date.getTime() + jitter);
+  }
+
+  function clampToSendWindow(date: Date, settings?: Record<string, unknown>): Date {
+    const startHour = parseWindowHour(settings?.sendWindowStart as string | undefined, 8);
+    const endHour = parseWindowHour(settings?.sendWindowEnd as string | undefined, 20);
+    const clamped = new Date(date);
+    if (clamped.getHours() < startHour) clamped.setHours(startHour, 0, 0, 0);
+    if (clamped.getHours() >= endHour) clamped.setHours(endHour, 0, 0, 0);
+    return clamped;
+  }
+
+  function parseWindowHour(val: string | undefined, fallback: number): number {
+    if (!val) return fallback;
+    const h = parseInt(val.split(':')[0], 10);
+    return isNaN(h) ? fallback : h;
+  }
+
+  // ─── POST /api/v1/messages/schedule-confirmation ──────────────────
+
+  interface ScheduleConfirmationItem {
+    cel: string;
+    nome: string;
+    data_atendimento: string;
+    horario: string;
+    descricao: string;
+    id_comanda: string;
+    starts_at_iso: string;
+  }
+
+  fastify.post<{ Body: { items: ScheduleConfirmationItem[] } }>('/api/v1/messages/schedule-confirmation', async (request, reply) => {
+    const { tenantId, traceId, correlationId, settings } = request.tenant;
+    const items = request.body?.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.code(400).send({ error: 'items array required' });
+    }
+
+    const instance =
+      await resolveInstanceByRole(tenantId, 'confirmacao') ??
+      await resolveSendInstance(tenantId, settings);
+    if (!instance) {
+      return reply.code(503).send({ error: 'No send instance available' });
+    }
+
+    let totalQueued = 0;
+
+    for (const item of items) {
+      if (!item.cel || !item.nome || !item.starts_at_iso || !item.id_comanda) continue;
+      const phone = cleanPhone(item.cel);
+      const startsAt = new Date(item.starts_at_iso);
+      const hoursUntil = (startsAt.getTime() - Date.now()) / 3_600_000;
+
+      // Threshold: < 2h → no jobs (client just interacted)
+      if (hoursUntil < 2) continue;
+
+      // Threshold: >= 24h → confirmation 24h before
+      if (hoursUntil >= 24) {
+        const confirm24h = clampToSendWindow(
+          addJitterMinutes(new Date(startsAt.getTime() - 24 * 3_600_000)),
+          settings,
+        );
+        await enqueueMessage({
+          tenantId, instanceId: instance.id, sessionName: instance.sessionName,
+          to: phone, content: '', type: 'list',
+          traceId, correlationId: item.id_comanda,
+          buttonText: 'Confirmar Presença',
+          sections: [{
+            title: 'Opções',
+            rows: [
+              { rowId: `ok:${item.id_comanda}`, title: '✅ Confirmar presença' },
+              { rowId: `ed:${item.id_comanda}`, title: '📅 Reagendar' },
+              { rowId: `close:${item.id_comanda}`, title: '❌ Cancelar' },
+            ],
+          }],
+          payload: { ...item, templateSlug: 'confirmation' },
+          delayMs: Math.max(0, confirm24h.getTime() - Date.now()),
+          scheduledFor: confirm24h,
+          sourceType: 'confirmation',
+          priority: 1,
+        });
+        totalQueued++;
+      }
+
+      // Reminder 2h (always created when hoursUntil >= 2)
+      const reminder2h = clampToSendWindow(
+        addJitterMinutes(new Date(startsAt.getTime() - 2 * 3_600_000)),
+        settings,
+      );
+      const firstName = item.nome.split(' ')[0];
+      await enqueueMessage({
+        tenantId, instanceId: instance.id, sessionName: instance.sessionName,
+        to: phone,
+        content: `Oi ${firstName}! 😊 Seu horário é daqui a 2h, às ${item.horario}. Te esperamos! 💕`,
+        type: 'text',
+        traceId, correlationId: item.id_comanda,
+        payload: { ...item, templateSlug: 'reminder-2h' },
+        delayMs: Math.max(0, reminder2h.getTime() - Date.now()),
+        scheduledFor: reminder2h,
+        sourceType: 'reminder-2h',
+        priority: 2,
+      });
+      totalQueued++;
+    }
+
+    logger.info({ tenantId, totalQueued, items: items.length }, 'Scheduled confirmations');
+    return reply.code(202).send({ message: 'Confirmations scheduled', queued: totalQueued });
+  });
+
+  // ─── POST /api/v1/messages/schedule-absence ───────────────────────
+
+  interface ScheduleAbsenceItem {
+    customer_id: string;
+    nome: string;
+    cel: string;
+    last_visit_time: string;
+    days: number;
+    templateSlug?: string;
+    instanceId?: string;
+  }
+
+  fastify.post<{ Body: { items: ScheduleAbsenceItem[] } }>('/api/v1/messages/schedule-absence', async (request, reply) => {
+    const { tenantId, traceId, correlationId, settings } = request.tenant;
+    const items = request.body?.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.code(400).send({ error: 'items array required' });
+    }
+
+    // Default instance (can be overridden per item)
+    const defaultInstance =
+      await resolveInstanceByRole(tenantId, 'ausencia') ??
+      await resolveSendInstance(tenantId, settings);
+
+    let totalQueued = 0;
+
+    for (const item of items) {
+      if (!item.cel || !item.nome || !item.last_visit_time) continue;
+      const phone = cleanPhone(item.cel);
+
+      // Parse last visit time and clamp to send window
+      const [h, m] = item.last_visit_time.split(':').map(Number);
+      const base = new Date();
+      base.setHours(h || 10, m || 0, 0, 0);
+      const scheduledFor = clampToSendWindow(addJitterMinutes(base), settings);
+      const delayMs = Math.max(0, scheduledFor.getTime() - Date.now());
+
+      // Resolve instance (per-item override or default)
+      let instance = defaultInstance;
+      if (item.instanceId) {
+        const [specific] = await db.select().from(whatsappInstances).where(
+          and(eq(whatsappInstances.tenantId, tenantId), eq(whatsappInstances.id, item.instanceId)),
+        );
+        if (specific) instance = specific;
+      }
+      if (!instance) continue;
+
+      const firstName = item.nome.split(' ')[0];
+      const days = item.days || 30;
+      const content = renderAbsenceTemplate(item.templateSlug ?? 'ausencia', firstName, days);
+
+      await enqueueMessage({
+        tenantId, instanceId: instance.id, sessionName: instance.sessionName,
+        to: phone, content, type: 'text',
+        traceId, correlationId: item.customer_id,
+        payload: { customerId: item.customer_id, days, templateSlug: item.templateSlug ?? 'ausencia' },
+        delayMs,
+        scheduledFor,
+        sourceType: 'absence',
+        priority: 3,
+      });
+      totalQueued++;
+    }
+
+    logger.info({ tenantId, totalQueued, items: items.length }, 'Scheduled absence reminders');
+    return reply.code(202).send({ message: 'Absences scheduled', queued: totalQueued });
+  });
+
+  // ─── POST /api/v1/messages/cancel-scheduled ───────────────────────
+
+  fastify.post<{ Body: { correlationId: string } }>('/api/v1/messages/cancel-scheduled', async (request, reply) => {
+    const { tenantId } = request.tenant;
+    const { correlationId: corrId } = request.body ?? {};
+    if (!corrId) {
+      return reply.code(400).send({ error: 'correlationId required' });
+    }
+
+    const updated = await db.update(messageLogs)
+      .set({ status: 'cancelled' })
+      .where(and(
+        eq(messageLogs.correlationId, corrId),
+        eq(messageLogs.status, 'scheduled'),
+        eq(messageLogs.tenantId, tenantId),
+      ))
+      .returning({ id: messageLogs.id });
+
+    logger.info({ tenantId, correlationId: corrId, cancelled: updated.length }, 'Cancelled scheduled messages');
+    return { cancelled: updated.length };
+  });
 };
+
+function renderAbsenceTemplate(slug: string, firstName: string, days: number): string {
+  switch (slug) {
+    case 'ausencia-saudade':
+      return `Oi ${firstName}! 🥰 Faz ${days} dias que não nos vemos... Estamos com saudade! Que tal agendar um horário? Responda essa mensagem e marcamos pra você! 💕`;
+    case 'ausencia-promo':
+      return `Oi ${firstName}! Faz tempo que você não aparece por aqui... Temos novidades e promoções especiais esperando por você! 🎉 Responda para agendar.`;
+    default:
+      return `Oi ${firstName}! Faz ${days} dias que não nos vemos. Estamos com saudade! Quando quiser, estamos aqui para te atender. 💕`;
+  }
+}
 
 export default messageRoutes;

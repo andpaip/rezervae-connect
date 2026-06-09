@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { eq, and, lte } from 'drizzle-orm';
 import { getRedisConnectionOptions, getRedisClient, QUEUE_NAMES } from '@rezervae-connect/queue';
 import { db, messageLogs, auditLogs, tenants } from '@rezervae-connect/database';
 import { eventBus } from '@rezervae-connect/events';
@@ -104,11 +104,22 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
 
   logger.info(ctx, 'Processing send-message job');
 
-  // Guard: check if message was already sent (prevents re-send on retry)
+  // Guard: check message status before processing
   const [existingLog] = await db.select({ status: messageLogs.status }).from(messageLogs).where(eq(messageLogs.id, messageLogId));
   if (existingLog?.status === 'sent') {
     logger.info(ctx, 'Message already sent, skipping retry');
     return { success: true };
+  }
+  if (existingLog?.status === 'cancelled') {
+    logger.info(ctx, 'Message cancelled before send, skipping');
+    return { success: true };
+  }
+
+  // Transition: scheduled → queued (for FE visibility)
+  if (existingLog?.status === 'scheduled') {
+    await db.update(messageLogs)
+      .set({ status: 'queued' })
+      .where(eq(messageLogs.id, messageLogId));
   }
 
   // Check daily limit
@@ -209,7 +220,7 @@ async function processSendMessage(job: Job<SendMessageJob>): Promise<SendResult>
     entityType: 'message',
     entityId: messageLogId,
     action: result.success ? 'sent' : 'failed',
-    newState: { status: result.success ? 'sent' : 'failed', providerMessageId: result.providerMessageId },
+    newState: { status: result.success ? 'sent' : 'failed', recipient: to, sessionName, type },
     metadata: { traceId, correlationId, jobId: job.id },
   });
 
@@ -250,6 +261,53 @@ export function createSendMessageWorker() {
   worker.on('completed', (job) => {
     logger.info({ jobId: job.id }, 'send-message job completed');
   });
+
+  // Recovery: re-enqueue stuck scheduled messages every 5 minutes
+  const recoveryInterval = setInterval(async () => {
+    try {
+      const threshold = new Date(Date.now() - 10 * 60 * 1000); // 10min overdue
+      const stuck = await db.select({
+        id: messageLogs.id,
+        tenantId: messageLogs.tenantId,
+        instanceId: messageLogs.instanceId,
+        recipient: messageLogs.recipient,
+        payload: messageLogs.payload,
+        traceId: messageLogs.traceId,
+        correlationId: messageLogs.correlationId,
+      }).from(messageLogs)
+        .where(and(
+          eq(messageLogs.status, 'scheduled'),
+          lte(messageLogs.scheduledFor, threshold),
+        ))
+        .limit(20);
+
+      if (stuck.length > 0) {
+        const { getQueues } = await import('@rezervae-connect/queue');
+        const queues = getQueues();
+        for (const msg of stuck) {
+          await db.update(messageLogs)
+            .set({ status: 'queued' })
+            .where(eq(messageLogs.id, msg.id));
+          await queues.sendMessage.add('send', {
+            tenantId: msg.tenantId,
+            instanceId: msg.instanceId ?? '',
+            sessionName: '',
+            messageLogId: msg.id,
+            to: msg.recipient ?? '',
+            content: '',
+            type: 'text' as const,
+            traceId: msg.traceId ?? '',
+            correlationId: msg.correlationId ?? '',
+          }, { priority: 1 });
+          logger.warn({ messageLogId: msg.id }, 'Recovery: re-enqueued stuck scheduled message');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Recovery check failed');
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+
+  worker.on('closing', () => clearInterval(recoveryInterval));
 
   return worker;
 }

@@ -19,6 +19,8 @@ export const messageLogs = pgTable('message_logs', {
   payload: jsonb('payload').default({}).$type<Record<string, unknown>>(),
   traceId: varchar('trace_id', { length: 100 }),
   correlationId: varchar('correlation_id', { length: 100 }),
+  sourceType: varchar('source_type', { length: 20 }),
+  scheduledFor: timestamp('scheduled_for'),
   queuedAt: timestamp('queued_at'),
   sentAt: timestamp('sent_at'),
   deliveredAt: timestamp('delivered_at'),
@@ -27,4 +29,5 @@ export const messageLogs = pgTable('message_logs', {
 }, (table) => [
   index('idx_msglog_tenant_status').on(table.tenantId, table.status),
   index('idx_msglog_tenant_created').on(table.tenantId, table.createdAt),
+  index('idx_msglog_status_scheduled').on(table.status, table.scheduledFor),
 ]);
