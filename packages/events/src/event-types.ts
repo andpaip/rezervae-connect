@@ -91,6 +91,7 @@ export interface InboxMessageEvent extends BaseEvent {
     customerPhone: string;
     customerName: string;
     unreadCount: number;
+    hasMedia?: boolean;
   };
 }
 

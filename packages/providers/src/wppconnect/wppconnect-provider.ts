@@ -10,6 +10,7 @@ import type {
   SendResult,
   InstanceStatus,
   RawIncomingMessage,
+  RawMediaData,
 } from '@rezervae-connect/shared';
 
 type WPPClient = Awaited<ReturnType<typeof wppconnect.create>>;
@@ -123,8 +124,8 @@ export class WPPConnectProvider implements ChannelProvider {
     this.setStatus(sessionName, 'connected');
 
     // Register incoming message handler (customer → us)
-    client.onMessage((msg: unknown) => {
-      const raw = this.mapToRawMessage(sessionName, msg);
+    client.onMessage(async (msg: unknown) => {
+      const raw = await this.mapToRawMessage(sessionName, msg, client);
       if (!raw) return;
       for (const cb of this.messageCallbacks) {
         cb(sessionName, raw);
@@ -132,7 +133,7 @@ export class WPPConnectProvider implements ChannelProvider {
     });
 
     // Capture device-sent messages (us → customer, sent from phone)
-    (client as unknown as { onAnyMessage: (cb: (msg: unknown) => void) => void }).onAnyMessage((msg: unknown) => {
+    (client as unknown as { onAnyMessage: (cb: (msg: unknown) => void) => void }).onAnyMessage(async (msg: unknown) => {
       const m = msg as Record<string, unknown>;
       if (!m.fromMe) return; // inbound already handled by onMessage
       if (!m.to || (m.to as string).includes('status@broadcast')) return;
@@ -142,16 +143,22 @@ export class WPPConnectProvider implements ChannelProvider {
       const msgId = (m.id as string) ?? '';
       if (this.hubSentIds.delete(msgId)) return;
 
+      const msgType = (m.type as string) ?? 'chat';
+
+      // Download media for media messages
+      const media = await this.downloadMediaSafe(client, m, msgType, sessionName);
+
       const raw: RawIncomingMessage = {
         from: (m.to as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
         to: (m.from as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
         body: (m.body as string) ?? '',
-        type: (m.type as string) ?? 'chat',
+        type: msgType,
         isGroupMsg: false,
         sender: { pushname: undefined, contactName: undefined },
         timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
         id: (m.id as string) ?? '',
         fromMe: true,
+        media,
       };
 
       for (const cb of this.deviceMessageCallbacks) {
@@ -524,7 +531,43 @@ export class WPPConnectProvider implements ChannelProvider {
     return client;
   }
 
-  private mapToRawMessage(sessionName: string, msg: unknown): RawIncomingMessage | null {
+  private static readonly MEDIA_TYPES = new Set(['image', 'audio', 'ptt', 'video', 'document', 'sticker']);
+  private static readonly MAX_MEDIA_SIZE = 5 * 1024 * 1024; // 5 MB
+
+  private async downloadMediaSafe(
+    client: WPPClient,
+    m: Record<string, unknown>,
+    msgType: string,
+    sessionName: string,
+  ): Promise<RawMediaData | undefined> {
+    if (!WPPConnectProvider.MEDIA_TYPES.has(msgType)) return undefined;
+
+    // Skip oversized media
+    const size = m.size as number | undefined;
+    if (size && size > WPPConnectProvider.MAX_MEDIA_SIZE) {
+      logger.info({ sessionName, msgId: m.id, size, type: msgType }, 'Skipping oversized media');
+      return { mimetype: (m.mimetype as string) ?? '', base64: '', caption: (m.caption as string) ?? undefined, filename: (m.filename as string) ?? undefined, size };
+    }
+
+    try {
+      const base64 = await client.downloadMedia(m.id as string);
+      const mimetype = (m.mimetype as string) ?? '';
+      const mediaData = m.mediaData as Record<string, unknown> | undefined;
+      return {
+        mimetype,
+        base64: base64.startsWith('data:') ? base64 : `data:${mimetype};base64,${base64}`,
+        caption: (m.caption as string) ?? undefined,
+        filename: (m.filename as string) ?? undefined,
+        size,
+        duration: (mediaData?.duration as number) ?? undefined,
+      };
+    } catch (err) {
+      logger.warn({ sessionName, msgId: m.id, type: msgType, err }, 'Failed to download media');
+      return { mimetype: (m.mimetype as string) ?? '', base64: '', caption: (m.caption as string) ?? undefined, filename: (m.filename as string) ?? undefined, size };
+    }
+  }
+
+  private async mapToRawMessage(sessionName: string, msg: unknown, client: WPPClient): Promise<RawIncomingMessage | null> {
     const m = msg as Record<string, unknown>;
     // Skip non-real messages (status broadcasts, groups)
     if (!m.from || (m.from as string).includes('status@broadcast')) return null;
@@ -532,11 +575,16 @@ export class WPPConnectProvider implements ChannelProvider {
     if (m.fromMe) return null;
 
     const s = m.sender as Record<string, unknown> | undefined;
+    const msgType = (m.type as string) ?? 'chat';
+
+    // Download media for media messages
+    const media = await this.downloadMediaSafe(client, m, msgType, sessionName);
+
     return {
       from: (m.from as string).replace(/@(c\.us|lid)$/, ''),
       to: (m.to as string)?.replace(/@(c\.us|lid)$/, '') ?? sessionName,
       body: (m.body as string) ?? '',
-      type: (m.type as string) ?? 'chat',
+      type: msgType,
       isGroupMsg: false,
       sender: {
         pushname: s?.pushname as string | undefined,
@@ -548,6 +596,7 @@ export class WPPConnectProvider implements ChannelProvider {
       listResponse: m.listResponse as RawIncomingMessage['listResponse'],
       timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
       id: (m.id as string) ?? '',
+      media,
     };
   }
 

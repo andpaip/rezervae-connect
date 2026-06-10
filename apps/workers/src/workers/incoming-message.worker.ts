@@ -25,6 +25,15 @@ export interface IncomingMessageJob {
   correlationId: string;
   /** True when message was sent FROM the device (outbound sync) */
   fromMe?: boolean;
+  /** Media data for image/audio/video/document/sticker messages */
+  media?: {
+    mimetype: string;
+    base64: string;
+    caption?: string;
+    filename?: string;
+    size?: number;
+    duration?: number;
+  };
 }
 
 // Maps rowId prefixes to actions and auto-reply messages
@@ -311,17 +320,28 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     }
   }
 
-  // 2. Persist message
+  // 2. Persist message (with media metadata if present)
+  const msgMetadata: Record<string, unknown> = {};
+  if (data.media) {
+    msgMetadata.mimetype = data.media.mimetype;
+    msgMetadata.base64 = data.media.base64;
+    if (data.media.caption) msgMetadata.caption = data.media.caption;
+    if (data.media.filename) msgMetadata.filename = data.media.filename;
+    if (data.media.size) msgMetadata.size = data.media.size;
+    if (data.media.duration) msgMetadata.duration = data.media.duration;
+  }
+
   const [msg] = await db.insert(conversationMessages).values({
     sessionId: session.id,
     tenantId,
     direction: 'inbound',
     sender: phone,
     type: messageType === 'chat' ? 'text' : messageType,
-    content: body,
+    content: data.media?.caption || body,
     providerMessageId: data.providerMessageId || undefined,
     status: 'delivered',
     deliveredAt: new Date(),
+    metadata: Object.keys(msgMetadata).length > 0 ? msgMetadata : {},
   }).returning();
 
   // 3. Find or create inbox_thread
@@ -391,11 +411,12 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
       messageId: msg.id,
       sessionName,
       from: phone,
-      body,
+      body: data.media?.caption || body,
       messageType,
       customerPhone: phone,
       customerName,
       unreadCount: thread.unreadCount ?? 1,
+      hasMedia: !!data.media?.base64,
     },
   });
 
@@ -419,7 +440,8 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
   // Skip system types
   const SKIP_TYPES = ['notification_template', 'e2e_notification', 'protocol', 'ciphertext', 'revoked'];
   if (SKIP_TYPES.includes(messageType)) return;
-  if (!body?.trim()) return;
+  // Skip empty text messages (but allow media messages with empty body)
+  if (!body?.trim() && !data.media) return;
 
   // Resolve LID → real phone BEFORE session lookup
   if (!/^55\d{10,11}$/.test(phone)) {
@@ -511,17 +533,28 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
     return;
   }
 
-  // Persist message as outbound from device
+  // Persist message as outbound from device (with media metadata if present)
+  const devMsgMeta: Record<string, unknown> = {};
+  if (data.media) {
+    devMsgMeta.mimetype = data.media.mimetype;
+    devMsgMeta.base64 = data.media.base64;
+    if (data.media.caption) devMsgMeta.caption = data.media.caption;
+    if (data.media.filename) devMsgMeta.filename = data.media.filename;
+    if (data.media.size) devMsgMeta.size = data.media.size;
+    if (data.media.duration) devMsgMeta.duration = data.media.duration;
+  }
+
   const [msg] = await db.insert(conversationMessages).values({
     sessionId: session.id,
     tenantId,
     direction: 'outbound',
     sender: 'device',
     type: messageType === 'chat' ? 'text' : messageType,
-    content: body,
+    content: data.media?.caption || body,
     providerMessageId: data.providerMessageId || undefined,
     status: 'sent',
     sentAt: new Date(),
+    metadata: Object.keys(devMsgMeta).length > 0 ? devMsgMeta : {},
   }).returning();
 
   // Find or create inbox thread (don't increment unread)

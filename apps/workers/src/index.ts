@@ -54,6 +54,7 @@ sessionManager.onIncomingMessage(async (tenantId, sessionName, message) => {
     providerMessageId: message.id,
     traceId: trace.traceId,
     correlationId: trace.correlationId,
+    media: message.media,
   });
 });
 
@@ -76,6 +77,7 @@ sessionManager.onDeviceMessage(async (tenantId, sessionName, message) => {
     traceId: trace.traceId,
     correlationId: trace.correlationId,
     fromMe: true,
+    media: message.media,
   });
 });
 

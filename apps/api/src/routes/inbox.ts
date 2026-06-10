@@ -65,7 +65,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
 
     // Batch fetch last message per session using lateral join (1 row per session, indexed)
     const sessionIds = rows.map((r) => r.conversationSessionId).filter(Boolean) as string[];
-    const lastMsgMap = new Map<string, { content: string | null; direction: string; createdAt: Date | null }>();
+    const lastMsgMap = new Map<string, { content: string | null; type: string | null; direction: string; createdAt: Date | null }>();
 
     if (sessionIds.length > 0) {
       // Use Drizzle query but limit results: fetch only most recent N messages per batch
@@ -74,6 +74,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
         .select({
           sessionId: conversationMessages.sessionId,
           content: conversationMessages.content,
+          type: conversationMessages.type,
           direction: conversationMessages.direction,
           createdAt: conversationMessages.createdAt,
         })
@@ -84,7 +85,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
 
       for (const m of lastMsgs) {
         if (m.sessionId && !lastMsgMap.has(m.sessionId)) {
-          lastMsgMap.set(m.sessionId, { content: m.content, direction: m.direction, createdAt: m.createdAt });
+          lastMsgMap.set(m.sessionId, { content: m.content, type: m.type, direction: m.direction, createdAt: m.createdAt });
         }
       }
     }
@@ -94,7 +95,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       return {
         ...row,
         lastMessage: lastMsg
-          ? { content: lastMsg.content?.substring(0, 100) ?? '', direction: lastMsg.direction, createdAt: lastMsg.createdAt }
+          ? { content: lastMsg.content?.substring(0, 100) ?? '', type: lastMsg.type, direction: lastMsg.direction, createdAt: lastMsg.createdAt }
           : null,
       };
     });
@@ -132,6 +133,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
         sender: conversationMessages.sender,
         type: conversationMessages.type,
         content: conversationMessages.content,
+        metadata: conversationMessages.metadata,
         status: conversationMessages.status,
         sentAt: conversationMessages.sentAt,
         deliveredAt: conversationMessages.deliveredAt,

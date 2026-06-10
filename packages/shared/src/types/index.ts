@@ -87,6 +87,15 @@ export interface SendResult {
   error?: string;
 }
 
+export interface RawMediaData {
+  mimetype: string;
+  base64: string;
+  caption?: string;
+  filename?: string;
+  size?: number;
+  duration?: number;
+}
+
 export interface RawIncomingMessage {
   from: string;
   to: string;
@@ -103,6 +112,8 @@ export interface RawIncomingMessage {
   id: string;
   /** True when message was sent FROM the device (outbound captured via onAnyMessage) */
   fromMe?: boolean;
+  /** Media data for image/audio/video/document/sticker messages */
+  media?: RawMediaData;
 }
 
 export interface ChannelProvider {
