@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { db } from '@rezervae-connect/database';
 import { whatsappInstances, auditLogs } from '@rezervae-connect/database';
@@ -23,6 +23,7 @@ interface ManagedSession {
   instanceId: string;
   sessionName: string;
   reconnectAttempts: number;
+  isReconnecting: boolean;
   lastQrHash?: string;
 }
 
@@ -72,6 +73,7 @@ export class SessionManager {
       instanceId,
       sessionName,
       reconnectAttempts: 0,
+      isReconnecting: false,
     });
 
     await this.updateInstanceStatus(instanceId, 'connecting', trace, { qrCode: null });
@@ -153,9 +155,16 @@ export class SessionManager {
       return;
     }
 
+    // Prevent parallel reconnect attempts (heartbeat + onStatusChange can race)
+    if (session.isReconnecting) {
+      logger.info({ sessionName }, 'Reconnect already in progress, skipping');
+      return;
+    }
+
     if (session.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       const trace = createTraceContext();
       logger.error({ sessionName, attempts: session.reconnectAttempts, ...trace }, 'Max reconnect attempts reached');
+      session.isReconnecting = false;
       await this.updateInstanceStatus(session.instanceId, 'error', trace);
       await this.audit(
         session.tenantId, session.instanceId, 'reconnect_failed',
@@ -164,6 +173,7 @@ export class SessionManager {
       return;
     }
 
+    session.isReconnecting = true;
     session.reconnectAttempts++;
     const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, session.reconnectAttempts - 1);
     const trace = createTraceContext();
@@ -188,8 +198,10 @@ export class SessionManager {
           instanceId: session.instanceId,
         });
         session.reconnectAttempts = 0;
+        session.isReconnecting = false;
       } catch (err) {
         logger.error({ sessionName, err }, 'Reconnect attempt failed');
+        session.isReconnecting = false;
         await this.reconnectSession(sessionName);
       }
     }, delay);
@@ -205,7 +217,7 @@ export class SessionManager {
       .where(
         and(
           eq(whatsappInstances.tenantId, tenantId),
-          eq(whatsappInstances.status, 'connected'),
+          sql`${whatsappInstances.status} IN ('connected', 'connecting')`,
         ),
       );
 
@@ -251,7 +263,12 @@ export class SessionManager {
     this.stopHeartbeat();
     const sessions = [...this.managedSessions.keys()];
     for (const sessionName of sessions) {
-      await this.disconnectSession(sessionName);
+      // Only close WPP connection — don't update DB status
+      // so restoreAllSessions() finds them as 'connected' on restart
+      this.managedSessions.delete(sessionName);
+      try {
+        await this.provider.disconnect(sessionName);
+      } catch { /* shutting down, ignore errors */ }
     }
     logger.info('All sessions shut down');
   }
@@ -298,6 +315,7 @@ export class SessionManager {
       if (status === 'connected') {
         updates.connectedAt = new Date();
         session.reconnectAttempts = 0;
+        session.isReconnecting = false;
         const phone = this.provider.getPhone(sessionName);
         if (phone) {
           updates.phone = phone;

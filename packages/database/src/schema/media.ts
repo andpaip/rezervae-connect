@@ -10,7 +10,7 @@ export const mediaAssets = pgTable('media_assets', {
   storageKey: varchar('storage_key', { length: 500 }).notNull(),
   size: bigint('size', { mode: 'number' }),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const mediaJobs = pgTable('media_jobs', {
@@ -19,5 +19,5 @@ export const mediaJobs = pgTable('media_jobs', {
   operation: varchar('operation', { length: 50 }).notNull(),
   status: varchar('status', { length: 30 }).default('pending').notNull(),
   result: jsonb('result').$type<Record<string, unknown> | null>(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

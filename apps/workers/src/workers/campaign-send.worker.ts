@@ -49,16 +49,28 @@ function msUntilMidnight(): number {
  * Count total stats for campaign progress event.
  */
 async function getCampaignStats(campaignId: string) {
-  const [sent] = await db.select({ c: sql<number>`count(*)::int` }).from(campaignRecipients)
-    .where(and(eq(campaignRecipients.campaignId, campaignId), eq(campaignRecipients.status, 'sent')));
-  const [errors] = await db.select({ c: sql<number>`count(*)::int` }).from(campaignRecipients)
-    .where(and(eq(campaignRecipients.campaignId, campaignId), eq(campaignRecipients.status, 'error')));
-  const [ignored] = await db.select({ c: sql<number>`count(*)::int` }).from(campaignRecipients)
-    .where(and(eq(campaignRecipients.campaignId, campaignId), eq(campaignRecipients.status, 'ignored')));
-  const [total] = await db.select({ c: sql<number>`count(*)::int` }).from(campaignRecipients)
-    .where(eq(campaignRecipients.campaignId, campaignId));
+  const rows = await db
+    .select({
+      status: campaignRecipients.status,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(campaignRecipients)
+    .where(eq(campaignRecipients.campaignId, campaignId))
+    .groupBy(campaignRecipients.status);
 
-  return { sent: sent?.c ?? 0, errors: errors?.c ?? 0, ignored: ignored?.c ?? 0, total: total?.c ?? 0 };
+  const counts: Record<string, number> = {};
+  let total = 0;
+  for (const r of rows) {
+    counts[r.status] = r.count;
+    total += r.count;
+  }
+
+  return {
+    sent: counts['sent'] ?? 0,
+    errors: counts['error'] ?? 0,
+    ignored: counts['ignored'] ?? 0,
+    total,
+  };
 }
 
 async function processCampaignSend(job: Job<CampaignProcessJob>): Promise<void> {

@@ -7,6 +7,6 @@ export const tenants = pgTable('tenants', {
   settings: jsonb('settings').default({}).$type<Record<string, unknown>>(),
   apiKeyHash: varchar('api_key_hash', { length: 255 }),
   status: varchar('status', { length: 20 }).default('active').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

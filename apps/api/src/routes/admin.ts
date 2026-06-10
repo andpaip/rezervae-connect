@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { randomBytes, createHmac } from 'node:crypto';
+import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, tenants } from '@rezervae-connect/database';
 import { getQueues, QUEUE_NAMES } from '@rezervae-connect/queue';
@@ -10,11 +10,16 @@ const logger = createLogger('admin');
 const VALID_QUEUES = Object.values(QUEUE_NAMES);
 
 const adminRoutes: FastifyPluginAsync = async (fastify) => {
-  // All admin routes require Bearer token = INTERNAL_SECRET
+  // All admin routes require Bearer token = INTERNAL_SECRET (timing-safe)
   fastify.addHook('preHandler', async (request, reply) => {
     const auth = request.headers.authorization;
     const expected = process.env.INTERNAL_SECRET;
-    if (!expected || auth !== `Bearer ${expected}`) {
+    if (!expected || !auth) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    const expectedBuf = Buffer.from(`Bearer ${expected}`);
+    const actualBuf = Buffer.from(auth);
+    if (expectedBuf.length !== actualBuf.length || !timingSafeEqual(expectedBuf, actualBuf)) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
   });
@@ -43,8 +48,11 @@ const adminRoutes: FastifyPluginAsync = async (fastify) => {
 
     // Generate API key and compute hash
     const apiKey = randomBytes(32).toString('hex');
-    const secret = process.env.INTERNAL_SECRET ?? 'dev-secret';
-    const apiKeyHash = createHmac('sha256', secret).update(apiKey).digest('hex');
+    const secret = process.env.INTERNAL_SECRET;
+    if (!secret && process.env.NODE_ENV === 'production') {
+      throw new Error('INTERNAL_SECRET env var is required in production');
+    }
+    const apiKeyHash = createHmac('sha256', secret ?? 'dev-secret').update(apiKey).digest('hex');
 
     const [tenant] = await db
       .insert(tenants)

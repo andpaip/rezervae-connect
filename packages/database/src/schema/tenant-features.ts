@@ -7,8 +7,8 @@ export const tenantFeatures = pgTable('tenant_features', {
   feature: varchar('feature', { length: 100 }).notNull(),
   enabled: boolean('enabled').default(false).notNull(),
   config: jsonb('config').default({}).$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   uniqueIndex('uq_tenant_feature').on(table.tenantId, table.feature),
 ]);

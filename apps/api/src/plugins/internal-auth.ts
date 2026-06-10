@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import fp from 'fastify-plugin';
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, tenants } from '@rezervae-connect/database';
 import { createLogger, type TenantContext, createTraceContext } from '@rezervae-connect/shared';
@@ -51,11 +51,16 @@ const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
     }
 
     // Validate token against stored hash
-    const tokenHash = createHmac('sha256', process.env.INTERNAL_SECRET ?? 'dev-secret')
+    const internalSecret = process.env.INTERNAL_SECRET;
+    if (!internalSecret && process.env.NODE_ENV === 'production') {
+      throw new Error('INTERNAL_SECRET env var is required in production');
+    }
+    const tokenHash = createHmac('sha256', internalSecret ?? 'dev-secret')
       .update(token)
       .digest('hex');
 
-    if (tokenHash !== tenant.apiKeyHash) {
+    if (!tenant.apiKeyHash || tokenHash.length !== tenant.apiKeyHash.length
+        || !timingSafeEqual(Buffer.from(tokenHash, 'hex'), Buffer.from(tenant.apiKeyHash, 'hex'))) {
       logger.warn({ tenantId }, 'Invalid API token');
       return reply.code(401).send({ error: 'Invalid credentials' });
     }
@@ -68,7 +73,8 @@ const internalAuthPlugin: FastifyPluginAsync = async (fastify) => {
       .update(`${timestamp}:${request.method}:${pathname}:${body}`)
       .digest('hex');
 
-    if (signature !== expectedSig) {
+    if (signature.length !== expectedSig.length
+        || !timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSig, 'hex'))) {
       logger.warn({ tenantId }, 'Invalid HMAC signature');
       return reply.code(401).send({ error: 'Invalid signature' });
     }

@@ -48,7 +48,7 @@ sessionManager.onIncomingMessage(async (tenantId, sessionName, message) => {
     body: message.body,
     messageType: message.type,
     isGroupMsg: message.isGroupMsg,
-    senderName: message.sender?.pushname,
+    senderName: message.sender?.contactName || message.sender?.pushname,
     listResponse: message.listResponse,
     timestamp: message.timestamp,
     providerMessageId: message.id,

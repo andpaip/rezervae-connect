@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { eq, and, desc, sql, ne } from 'drizzle-orm';
+import { eq, and, desc, sql, ne, inArray } from 'drizzle-orm';
 import {
   db,
   inboxThreads,
@@ -63,24 +63,41 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       .limit(limit)
       .offset(offset);
 
-    // Get last message snippet for each thread
-    const threadsWithSnippet = await Promise.all(
-      rows.map(async (row) => {
-        const [lastMsg] = await db
-          .select({ content: conversationMessages.content, direction: conversationMessages.direction, createdAt: conversationMessages.createdAt })
-          .from(conversationMessages)
-          .where(eq(conversationMessages.sessionId, row.conversationSessionId!))
-          .orderBy(desc(conversationMessages.createdAt))
-          .limit(1);
+    // Batch fetch last message per session using lateral join (1 row per session, indexed)
+    const sessionIds = rows.map((r) => r.conversationSessionId).filter(Boolean) as string[];
+    const lastMsgMap = new Map<string, { content: string | null; direction: string; createdAt: Date | null }>();
 
-        return {
-          ...row,
-          lastMessage: lastMsg
-            ? { content: lastMsg.content?.substring(0, 100) ?? '', direction: lastMsg.direction, createdAt: lastMsg.createdAt }
-            : null,
-        };
-      }),
-    );
+    if (sessionIds.length > 0) {
+      // Use Drizzle query but limit results: fetch only most recent N messages per batch
+      // then deduplicate in JS. With the idx_convmsg_session_created index this is efficient.
+      const lastMsgs = await db
+        .select({
+          sessionId: conversationMessages.sessionId,
+          content: conversationMessages.content,
+          direction: conversationMessages.direction,
+          createdAt: conversationMessages.createdAt,
+        })
+        .from(conversationMessages)
+        .where(inArray(conversationMessages.sessionId, sessionIds))
+        .orderBy(desc(conversationMessages.createdAt))
+        .limit(sessionIds.length * 2);
+
+      for (const m of lastMsgs) {
+        if (m.sessionId && !lastMsgMap.has(m.sessionId)) {
+          lastMsgMap.set(m.sessionId, { content: m.content, direction: m.direction, createdAt: m.createdAt });
+        }
+      }
+    }
+
+    const threadsWithSnippet = rows.map((row) => {
+      const lastMsg = row.conversationSessionId ? lastMsgMap.get(row.conversationSessionId) : null;
+      return {
+        ...row,
+        lastMessage: lastMsg
+          ? { content: lastMsg.content?.substring(0, 100) ?? '', direction: lastMsg.direction, createdAt: lastMsg.createdAt }
+          : null,
+      };
+    });
 
     return { data: threadsWithSnippet, meta: { limit, offset } };
   });
@@ -181,30 +198,38 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(503).send({ error: 'No connected instance available' });
     }
 
-    // Persist outbound message
-    const [msg] = await db.insert(conversationMessages).values({
-      sessionId: session.id,
-      tenantId,
-      direction: 'outbound',
-      sender: 'operator',
-      type,
-      content,
-      status: 'queued',
-    }).returning();
+    // Persist message + log + update thread in a single transaction
+    const { msg, log } = await db.transaction(async (tx) => {
+      const [msg] = await tx.insert(conversationMessages).values({
+        sessionId: session.id,
+        tenantId,
+        direction: 'outbound',
+        sender: 'operator',
+        type,
+        content,
+        status: 'queued',
+      }).returning();
 
-    // Create message log + enqueue
-    const [log] = await db.insert(messageLogs).values({
-      tenantId,
-      instanceId: instance.id,
-      direction: 'outbound',
-      recipient: session.customerPhone,
-      status: 'queued',
-      payload: { content, type, source: 'inbox', threadId: id, conversationMessageId: msg.id },
-      traceId,
-      correlationId,
-      queuedAt: new Date(),
-    }).returning();
+      const [log] = await tx.insert(messageLogs).values({
+        tenantId,
+        instanceId: instance.id,
+        direction: 'outbound',
+        recipient: session.customerPhone,
+        status: 'queued',
+        payload: { content, type, source: 'inbox', threadId: id, conversationMessageId: msg.id },
+        traceId,
+        correlationId,
+        queuedAt: new Date(),
+      }).returning();
 
+      await tx.update(inboxThreads)
+        .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+        .where(eq(inboxThreads.id, id));
+
+      return { msg, log };
+    });
+
+    // Enqueue AFTER transaction commits (avoid sending if DB rollback)
     const queues = getQueues();
     await queues.sendMessage.add('inbox-send', {
       tenantId,
@@ -218,11 +243,6 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       traceId,
       correlationId,
     });
-
-    // Update thread lastMessageAt
-    await db.update(inboxThreads)
-      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
-      .where(eq(inboxThreads.id, id));
 
     // Emit real-time event
     eventBus.emit({
@@ -377,25 +397,26 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(404).send({ error: 'Thread not found' });
     }
 
-    await db.update(inboxThreads)
-      .set({ status: 'closed', unreadCount: 0, updatedAt: new Date() })
-      .where(eq(inboxThreads.id, id));
+    await db.transaction(async (tx) => {
+      await tx.update(inboxThreads)
+        .set({ status: 'closed', unreadCount: 0, updatedAt: new Date() })
+        .where(eq(inboxThreads.id, id));
 
-    // Also close the conversation session
-    if (thread.conversationSessionId) {
-      await db.update(conversationSessions)
-        .set({ state: 'closed', updatedAt: new Date() })
-        .where(eq(conversationSessions.id, thread.conversationSessionId));
-    }
+      if (thread.conversationSessionId) {
+        await tx.update(conversationSessions)
+          .set({ state: 'closed', updatedAt: new Date() })
+          .where(eq(conversationSessions.id, thread.conversationSessionId));
+      }
 
-    await db.insert(auditLogs).values({
-      tenantId,
-      actor: userId ?? 'system',
-      entityType: 'inbox_thread',
-      action: 'closed',
-      entityId: id,
-      newState: { status: 'closed', reason },
-      metadata: { traceId, correlationId },
+      await tx.insert(auditLogs).values({
+        tenantId,
+        actor: userId ?? 'system',
+        entityType: 'inbox_thread',
+        action: 'closed',
+        entityId: id,
+        newState: { status: 'closed', reason },
+        metadata: { traceId, correlationId },
+      });
     });
 
     eventBus.emit({

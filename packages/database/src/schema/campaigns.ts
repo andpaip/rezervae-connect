@@ -17,16 +17,16 @@ export const campaigns = pgTable('campaigns', {
   }>(),
   stats: jsonb('stats').default({}).$type<Record<string, number>>(),
   instanceId: uuid('instance_id').references(() => whatsappInstances.id),
-  startedAt: timestamp('started_at'),
-  pausedAt: timestamp('paused_at'),
-  finishedAt: timestamp('finished_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  pausedAt: timestamp('paused_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const campaignRecipients = pgTable('campaign_recipients', {
   id: uuid('id').defaultRandom().primaryKey(),
-  campaignId: uuid('campaign_id').notNull().references(() => campaigns.id),
+  campaignId: uuid('campaign_id').notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
   tenantId: uuid('tenant_id').notNull(),
   customerPhone: varchar('customer_phone', { length: 20 }).notNull(),
   customerName: varchar('customer_name', { length: 255 }),
@@ -34,7 +34,7 @@ export const campaignRecipients = pgTable('campaign_recipients', {
   status: varchar('status', { length: 20 }).default('pending').notNull(),
   error: text('error'),
   attempts: integer('attempts').default(0),
-  sentAt: timestamp('sent_at'),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
   sortOrder: integer('sort_order').notNull(),
 }, (table) => [

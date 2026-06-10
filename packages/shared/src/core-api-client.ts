@@ -26,9 +26,13 @@ export interface CoreApiRequestOptions {
 }
 
 function getConfig(): CoreApiConfig {
+  const secret = process.env.CORE_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('CORE_SECRET env var is required in production');
+  }
   return {
     baseUrl: process.env.CORE_API_URL ?? 'http://localhost:8080',
-    secret: process.env.CORE_SECRET ?? 'dev-secret',
+    secret: secret ?? 'dev-secret',
     timeoutMs: parseInt(process.env.CORE_API_TIMEOUT ?? '10000', 10),
   };
 }

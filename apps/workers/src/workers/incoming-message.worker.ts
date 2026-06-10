@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, or, sql } from 'drizzle-orm';
 import { getRedisConnectionOptions, getRedisClient, getQueues, QUEUE_NAMES } from '@rezervae-connect/queue';
 import { db, auditLogs, whatsappInstances, conversationSessions, conversationMessages, inboxThreads } from '@rezervae-connect/database';
 import { eventBus } from '@rezervae-connect/events';
@@ -238,19 +238,37 @@ async function enqueueAutoReply(
 async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
   const { tenantId, from, body, messageType, sessionName, senderName, traceId, correlationId } = data;
 
-  // Use raw sender ID as-is (LID or phone). Each is unique per sender.
-  // WPPConnect v2 sends LIDs (internal WhatsApp IDs) — there's no reliable
-  // LID→phone mapping, so we use the LID directly as session key.
-  // The provider's formatRecipient() handles @lid vs @c.us when sending replies.
-  let phone = from.replace(/@.*$/, '');
+  const originalFrom = from.replace(/@.*$/, '');
+  let phone = originalFrom;
 
-  // 1. Find or create conversation_session
+  // Resolve LID → real phone BEFORE session lookup
+  // so we always search by the real phone number
+  if (!/^55\d{10,11}$/.test(phone)) {
+    try {
+      const { getProvider } = await import('../registry.js');
+      const provider = getProvider();
+      if (provider.resolvePhone) {
+        const realPhone = await provider.resolvePhone(sessionName, phone);
+        if (realPhone) {
+          logger.info({ tenantId, lid: phone, realPhone }, 'Resolved LID to real phone');
+          phone = realPhone;
+        }
+      }
+    } catch { /* best effort — LID still works */ }
+  }
+
+  // 1. Find or create conversation_session (search by resolved phone OR original LID)
   let [session] = await db
     .select()
     .from(conversationSessions)
     .where(and(
       eq(conversationSessions.tenantId, tenantId),
-      eq(conversationSessions.customerPhone, phone),
+      phone !== originalFrom
+        ? or(
+            eq(conversationSessions.customerPhone, phone),
+            eq(conversationSessions.customerPhone, originalFrom),
+          )
+        : eq(conversationSessions.customerPhone, phone),
       eq(conversationSessions.state, 'open'),
     ))
     .limit(1);
@@ -276,44 +294,14 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     }).returning();
 
     logger.info({ tenantId, phone, sessionId: session.id }, 'Created conversation session');
-
-    // Try to resolve real phone from LID
-    if (!/^55\d{10,11}$/.test(phone)) {
-      try {
-        const { getProvider } = await import('../registry.js');
-        const provider = getProvider();
-        if (provider.resolvePhone) {
-          const realPhone = await provider.resolvePhone(sessionName, phone);
-          if (realPhone) {
-            await db.update(conversationSessions)
-              .set({ customerPhone: realPhone })
-              .where(eq(conversationSessions.id, session.id));
-            phone = realPhone;
-            logger.info({ tenantId, sessionId: session.id, realPhone }, 'Resolved real phone for session');
-          }
-        }
-      } catch { /* best effort — LID still works for messaging */ }
-    }
   } else {
-    // Update session — also fill customerName if missing + resolve phone if still LID
+    // Update session — fill customerName if missing, fix phone if was LID
     const updates: Record<string, unknown> = { lastMessageAt: new Date(), updatedAt: new Date() };
     if (senderName && !session.customerName) {
       updates.customerName = senderName;
     }
-    // Resolve phone if session still has a LID
-    if (!/^55\d{10,11}$/.test(session.customerPhone)) {
-      try {
-        const { getProvider } = await import('../registry.js');
-        const provider = getProvider();
-        if (provider.resolvePhone) {
-          const realPhone = await provider.resolvePhone(sessionName, session.customerPhone);
-          if (realPhone) {
-            updates.customerPhone = realPhone;
-            phone = realPhone;
-            logger.info({ tenantId, sessionId: session.id, realPhone }, 'Resolved real phone for existing session');
-          }
-        }
-      } catch { /* best effort */ }
+    if (session.customerPhone !== phone && /^55\d{10,11}$/.test(phone)) {
+      updates.customerPhone = phone;
     }
     await db.update(conversationSessions)
       .set(updates)
@@ -425,23 +413,54 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
   const { tenantId, from, body, messageType, sessionName, traceId, correlationId } = data;
 
   // `from` for device messages = the recipient (customer), not us
-  const phone = from.replace(/@.*$/, '');
+  const originalFrom = from.replace(/@.*$/, '');
+  let phone = originalFrom;
 
   // Skip system types
   const SKIP_TYPES = ['notification_template', 'e2e_notification', 'protocol', 'ciphertext', 'revoked'];
   if (SKIP_TYPES.includes(messageType)) return;
   if (!body?.trim()) return;
 
-  // Find or create conversation_session (same logic as upsertInboxThread)
+  // Resolve LID → real phone BEFORE session lookup
+  if (!/^55\d{10,11}$/.test(phone)) {
+    try {
+      const { getProvider } = await import('../registry.js');
+      const provider = getProvider();
+      if (provider.resolvePhone) {
+        const realPhone = await provider.resolvePhone(sessionName, phone);
+        if (realPhone) phone = realPhone;
+      }
+    } catch { /* best effort */ }
+  }
+
+  // Find or create conversation_session (search by resolved phone OR original LID)
   let [session] = await db
     .select()
     .from(conversationSessions)
     .where(and(
       eq(conversationSessions.tenantId, tenantId),
-      eq(conversationSessions.customerPhone, phone),
+      phone !== originalFrom
+        ? or(
+            eq(conversationSessions.customerPhone, phone),
+            eq(conversationSessions.customerPhone, originalFrom),
+          )
+        : eq(conversationSessions.customerPhone, phone),
       eq(conversationSessions.state, 'open'),
     ))
     .limit(1);
+
+  // Resolve contact name for new sessions or sessions without a name
+  let contactName: string | null = null;
+  if (!session || !session.customerName) {
+    try {
+      const { getProvider } = await import('../registry.js');
+      const provider = getProvider();
+      if (provider.getContactName) {
+        const chatId = `${originalFrom}@lid`;
+        contactName = await provider.getContactName(sessionName, chatId);
+      }
+    } catch { /* best effort */ }
+  }
 
   if (!session) {
     const [inst] = await db
@@ -455,15 +474,23 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
     [session] = await db.insert(conversationSessions).values({
       tenantId,
       customerPhone: phone,
-      customerName: null,
+      customerName: contactName,
       instanceId: inst?.id ?? null,
       state: 'open',
       status: 'bot',
       lastMessageAt: new Date(),
     }).returning();
   } else {
+    // Update phone if session had LID and we now have a real phone
+    const updates: Record<string, unknown> = { lastMessageAt: new Date(), updatedAt: new Date() };
+    if (session.customerPhone !== phone && /^55\d{10,11}$/.test(phone)) {
+      updates.customerPhone = phone;
+    }
+    if (!session.customerName && contactName) {
+      updates.customerName = contactName;
+    }
     await db.update(conversationSessions)
-      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .set(updates)
       .where(eq(conversationSessions.id, session.id));
   }
 
@@ -517,11 +544,16 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
       priority: 'normal',
       unreadCount: 0,
       lastMessageAt: new Date(),
-      metadata: { customerPhone: phone },
+      metadata: { customerPhone: phone, customerName: contactName ?? session.customerName ?? null },
     }).returning();
   } else {
+    const threadMeta = (thread.metadata ?? {}) as Record<string, unknown>;
+    const threadUpdates: Record<string, unknown> = { lastMessageAt: new Date(), updatedAt: new Date() };
+    if (contactName && !threadMeta.customerName) {
+      threadUpdates.metadata = { ...threadMeta, customerName: contactName, customerPhone: phone };
+    }
     await db.update(inboxThreads)
-      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .set(threadUpdates)
       .where(eq(inboxThreads.id, thread.id));
   }
 

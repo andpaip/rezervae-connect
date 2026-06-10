@@ -12,7 +12,7 @@ export const auditLogs = pgTable('audit_logs', {
   oldState: jsonb('old_state').$type<Record<string, unknown> | null>(),
   newState: jsonb('new_state').$type<Record<string, unknown> | null>(),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index('idx_audit_tenant_entity_created').on(table.tenantId, table.entityType, table.createdAt),
   index('idx_audit_tenant_action_created').on(table.tenantId, table.action, table.createdAt),

@@ -1,6 +1,5 @@
 import wppconnect from '@wppconnect-team/wppconnect';
 import { execSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
 import { createLogger } from '@rezervae-connect/shared';
 import type {
   ChannelProvider,
@@ -29,6 +28,11 @@ export class WPPConnectProvider implements ChannelProvider {
   private sessions = new Map<string, WPPClient>();
   private statuses = new Map<string, InstanceStatus>();
   private phones = new Map<string, string>();
+  /** LID → real phone cache (null = unresolvable). Evicts oldest when over MAX_CACHE. */
+  private phoneCache = new Map<string, string | null>();
+  /** contactId → display name cache (null = unknown). Evicts oldest when over MAX_CACHE. */
+  private contactNameCache = new Map<string, string | null>();
+  private static readonly MAX_CACHE = 5000;
 
   private qrCallbacks: QRCallback[] = [];
   private statusCallbacks: StatusCallback[] = [];
@@ -144,7 +148,7 @@ export class WPPConnectProvider implements ChannelProvider {
         body: (m.body as string) ?? '',
         type: (m.type as string) ?? 'chat',
         isGroupMsg: false,
-        sender: { pushname: undefined },
+        sender: { pushname: undefined, contactName: undefined },
         timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
         id: (m.id as string) ?? '',
         fromMe: true,
@@ -186,52 +190,36 @@ export class WPPConnectProvider implements ChannelProvider {
   }
 
   async resolvePhone(sessionName: string, lidOrPhone: string): Promise<string | null> {
+    if (/^55\d{10,11}$/.test(lidOrPhone)) return lidOrPhone;
+
+    const cached = this.phoneCache.get(lidOrPhone);
+    if (cached !== undefined) return cached;
+
     const client = this.getClientOrThrow(sessionName);
-    const chatId = /^55\d{10,11}$/.test(lidOrPhone)
-      ? `${lidOrPhone}@c.us`
-      : `${lidOrPhone}@lid`;
+    const chatId = `${lidOrPhone}@lid`;
 
-    const debugFile = '/tmp/resolve-phone-debug.log';
-
-    // Try getPnLidEntry first (LID↔phone mapping)
+    // getPnLidEntry returns { phoneNumber: { id: "5511...", server: "c.us" }, ... }
     try {
       const entry = await (client as unknown as {
         getPnLidEntry: (id: string) => Promise<unknown>;
       }).getPnLidEntry(chatId);
-      const entryJson = JSON.stringify(entry, null, 2);
-      logger.info({ sessionName, lid: lidOrPhone }, 'getPnLidEntry raw result');
-      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getPnLidEntry(${chatId}):\n${entryJson}\n`);
       if (entry && typeof entry === 'object') {
         const e = entry as Record<string, unknown>;
-        const pn = e.pnNumber as Record<string, unknown> | undefined;
-        const phone = (pn?.user as string) ?? null;
+        const pn = e.phoneNumber as Record<string, unknown> | undefined;
+        const phone = (pn?.id as string) ?? null;
         if (phone && /^55\d{10,11}$/.test(phone)) {
+          logger.info({ sessionName, lid: lidOrPhone, phone }, 'Resolved phone via getPnLidEntry');
+          this.phoneCache.set(lidOrPhone, phone);
+          this.evictIfNeeded(this.phoneCache);
           return phone;
         }
       }
     } catch (err) {
       logger.warn({ sessionName, lidOrPhone, err }, 'getPnLidEntry failed');
-      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getPnLidEntry(${chatId}) ERROR: ${err}\n`);
     }
 
-    // Try getContact as fallback
-    try {
-      const contact = await client.getContact(chatId);
-      const contactJson = JSON.stringify(contact, null, 2);
-      logger.info({ sessionName, lid: lidOrPhone }, 'getContact raw result');
-      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getContact(${chatId}):\n${contactJson}\n`);
-      const c = contact as unknown as Record<string, unknown>;
-      // Check common fields where phone might be
-      const idStr = (c.id as string) ?? '';
-      const match = idStr.match(/^(\d+)@c\.us$/);
-      if (match && /^55\d{10,11}$/.test(match[1])) {
-        return match[1];
-      }
-    } catch (err) {
-      logger.warn({ sessionName, lidOrPhone, err }, 'getContact failed');
-      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getContact(${chatId}) ERROR: ${err}\n`);
-    }
-
+    this.phoneCache.set(lidOrPhone, null);
+    this.evictIfNeeded(this.phoneCache);
     return null;
   }
 
@@ -250,7 +238,13 @@ export class WPPConnectProvider implements ChannelProvider {
           body: (m.body as string) ?? '',
           type: (m.type as string) ?? 'chat',
           isGroupMsg: false,
-          sender: { pushname: ((m.sender as Record<string, unknown>)?.pushname as string) ?? undefined },
+          sender: {
+            pushname: ((m.sender as Record<string, unknown>)?.pushname as string) ?? undefined,
+            contactName: (m.sender as Record<string, unknown>)?.name as string | undefined
+              ?? (m.sender as Record<string, unknown>)?.formattedName as string | undefined
+              ?? (m.sender as Record<string, unknown>)?.verifiedName as string | undefined
+              ?? (m as Record<string, unknown>).notifyName as string | undefined,
+          },
           timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
           id: (m.id as string) ?? '',
           fromMe: !!m.fromMe,
@@ -496,6 +490,26 @@ export class WPPConnectProvider implements ChannelProvider {
     return /^55\d{10,11}$/.test(to) ? `${to}@c.us` : `${to}@lid`;
   }
 
+  async getContactName(sessionName: string, contactId: string): Promise<string | null> {
+    const cached = this.contactNameCache.get(contactId);
+    if (cached !== undefined) return cached;
+
+    const client = this.getClientOrThrow(sessionName);
+    try {
+      const contact = await client.getContact(contactId);
+      const name = contact.name || contact.pushname || contact.verifiedName || null;
+      this.contactNameCache.set(contactId, name);
+      this.evictIfNeeded(this.contactNameCache);
+      logger.info({ sessionName, contactId, name }, 'Resolved contact name via getContact');
+      return name;
+    } catch (err) {
+      logger.warn({ sessionName, contactId, err }, 'getContact failed');
+      this.contactNameCache.set(contactId, null);
+      this.evictIfNeeded(this.contactNameCache);
+      return null;
+    }
+  }
+
   /** Track a hub-sent message ID so onAnyMessage skips it (auto-expires after 30s) */
   private trackHubSent(id: string): void {
     this.hubSentIds.add(id);
@@ -517,16 +531,34 @@ export class WPPConnectProvider implements ChannelProvider {
     if (m.isGroupMsg) return null;
     if (m.fromMe) return null;
 
+    const s = m.sender as Record<string, unknown> | undefined;
     return {
       from: (m.from as string).replace(/@(c\.us|lid)$/, ''),
       to: (m.to as string)?.replace(/@(c\.us|lid)$/, '') ?? sessionName,
       body: (m.body as string) ?? '',
       type: (m.type as string) ?? 'chat',
       isGroupMsg: false,
-      sender: { pushname: (m.sender as Record<string, unknown>)?.pushname as string | undefined },
+      sender: {
+        pushname: s?.pushname as string | undefined,
+        contactName: s?.name as string | undefined
+          ?? s?.formattedName as string | undefined
+          ?? s?.verifiedName as string | undefined
+          ?? (m as Record<string, unknown>).notifyName as string | undefined,
+      },
       listResponse: m.listResponse as RawIncomingMessage['listResponse'],
       timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
       id: (m.id as string) ?? '',
     };
+  }
+
+  /** Evict oldest entries from a Map when it exceeds MAX_CACHE */
+  private evictIfNeeded<V>(cache: Map<string, V>): void {
+    if (cache.size <= WPPConnectProvider.MAX_CACHE) return;
+    const excess = cache.size - WPPConnectProvider.MAX_CACHE;
+    const iter = cache.keys();
+    for (let i = 0; i < excess; i++) {
+      const key = iter.next().value;
+      if (key !== undefined) cache.delete(key);
+    }
   }
 }

@@ -27,7 +27,9 @@ function createQueue(name: string): Queue {
   });
 }
 
-export function getQueues() {
+let _queuesCache: ReturnType<typeof _createQueues> | null = null;
+
+function _createQueues() {
   return {
     sendMessage: createQueue(QUEUE_NAMES.SEND_MESSAGE),
     incomingMessage: createQueue(QUEUE_NAMES.INCOMING_MESSAGE),
@@ -43,4 +45,9 @@ export function getQueues() {
     incomingMessageDlq: createQueue(QUEUE_NAMES.INCOMING_MESSAGE_DLQ),
     aiProcessingDlq: createQueue(QUEUE_NAMES.AI_PROCESSING_DLQ),
   };
+}
+
+export function getQueues() {
+  if (!_queuesCache) _queuesCache = _createQueues();
+  return _queuesCache;
 }

@@ -67,7 +67,7 @@ async function processSyncHistory(job: Job<SyncHistoryJob>): Promise<{ synced: n
 
   // 2. Build chatId (phone@c.us or phone@lid)
   const phone = session.customerPhone;
-  const chatId = /^55\d{10,11}$/.test(phone) ? `${phone}@c.us` : `${phone}@lid`;
+  let chatId = /^55\d{10,11}$/.test(phone) ? `${phone}@c.us` : `${phone}@lid`;
 
   // 3. Fetch messages from WPP via provider
   const { getProvider } = await import('../registry.js');
@@ -78,7 +78,21 @@ async function processSyncHistory(job: Job<SyncHistoryJob>): Promise<{ synced: n
     return { synced: 0 };
   }
 
-  const wppMessages = await provider.getMessages(instance.sessionName, chatId, 50);
+  let wppMessages = await provider.getMessages(instance.sessionName, chatId, 50);
+
+  // Fallback: if @lid returned 0 msgs and we can resolve the real phone, try @c.us
+  if (wppMessages.length === 0 && chatId.endsWith('@lid') && provider.resolvePhone) {
+    try {
+      const realPhone = await provider.resolvePhone(instance.sessionName, phone);
+      if (realPhone) {
+        const altChatId = `${realPhone}@c.us`;
+        logger.info({ ...ctx, lid: chatId, altChatId }, 'LID returned 0 msgs, retrying with @c.us');
+        wppMessages = await provider.getMessages(instance.sessionName, altChatId, 50);
+        if (wppMessages.length > 0) chatId = altChatId;
+      }
+    } catch { /* best effort */ }
+  }
+
   if (wppMessages.length === 0) {
     logger.info(ctx, 'No messages from WPP');
     return { synced: 0 };

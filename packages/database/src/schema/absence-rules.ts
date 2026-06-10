@@ -11,7 +11,7 @@ export const absenceRules = pgTable('absence_rules', {
   messageType: varchar('message_type', { length: 20 }).default('text').notNull(),
   enabled: boolean('enabled').default(true).notNull(),
   sortOrder: integer('sort_order').default(0).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   uniqueIndex('uq_tenant_days').on(table.tenantId, table.days),
 ]);

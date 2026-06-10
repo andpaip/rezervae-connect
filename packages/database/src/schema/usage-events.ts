@@ -9,7 +9,7 @@ export const usageEvents = pgTable('usage_events', {
   cost: numeric('cost', { precision: 10, scale: 4 }),
   referenceId: varchar('reference_id', { length: 255 }),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index('idx_usage_tenant_feature_created').on(table.tenantId, table.feature, table.createdAt),
 ]);

@@ -93,7 +93,7 @@ export interface RawIncomingMessage {
   body: string;
   type: string;
   isGroupMsg: boolean;
-  sender: { pushname?: string };
+  sender: { pushname?: string; contactName?: string };
   listResponse?: {
     singleSelectReply?: {
       selectedRowId?: string;
@@ -120,6 +120,8 @@ export interface ChannelProvider {
   getMessages?(sessionName: string, chatId: string, count?: number): Promise<RawIncomingMessage[]>;
   /** Resolve real phone number from a LID (WhatsApp internal ID). */
   resolvePhone?(sessionName: string, lidOrPhone: string): Promise<string | null>;
+  /** Get contact display name (from phone agenda, pushname, or business name). Cached. */
+  getContactName?(sessionName: string, contactId: string): Promise<string | null>;
 }
 
 // === Internal Auth ===

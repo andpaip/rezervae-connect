@@ -42,7 +42,10 @@ app.addHook('preParsing', async (request, _reply, payload) => {
 });
 
 // Plugins
-await app.register(cors, { origin: true });
+const corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:3000,http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim());
+await app.register(cors, { origin: corsOrigins });
 await app.register(rateLimit, {
   max: 100,
   timeWindow: '1 minute',
