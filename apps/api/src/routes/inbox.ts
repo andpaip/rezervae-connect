@@ -210,7 +210,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/api/v1/inbox/threads/:id/messages', async (request, reply) => {
     const { tenantId } = request.tenant;
     const { id } = request.params;
-    const limit = Math.min(Number(request.query.limit) || 50, 200);
+    const limit = Math.min(Number(request.query.limit) || 50, 500);
     const offset = Number(request.query.offset) || 0;
 
     // Verify thread belongs to tenant

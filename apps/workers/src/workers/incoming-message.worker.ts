@@ -283,21 +283,31 @@ async function resolveOrCreateSession(opts: {
 }): Promise<typeof conversationSessions.$inferSelect> {
   const { tenantId, phone, originalFrom, sessionName, customerName } = opts;
 
-  // 1. Try to find existing open session (by resolved phone OR original LID)
+  // 1. Try to find existing open session
+  // Search by real phone first, then fall back to LID (originalFrom).
+  // Never OR them — a LID can collide with another contact's phone.
   let [session] = await db
     .select()
     .from(conversationSessions)
     .where(and(
       eq(conversationSessions.tenantId, tenantId),
-      phone !== originalFrom
-        ? or(
-            eq(conversationSessions.customerPhone, phone),
-            eq(conversationSessions.customerPhone, originalFrom),
-          )
-        : eq(conversationSessions.customerPhone, phone),
+      eq(conversationSessions.customerPhone, phone),
       eq(conversationSessions.state, 'open'),
     ))
     .limit(1);
+
+  // Fallback: search by original LID (only if phone was resolved from LID)
+  if (!session && phone !== originalFrom) {
+    [session] = await db
+      .select()
+      .from(conversationSessions)
+      .where(and(
+        eq(conversationSessions.tenantId, tenantId),
+        eq(conversationSessions.customerPhone, originalFrom),
+        eq(conversationSessions.state, 'open'),
+      ))
+      .limit(1);
+  }
 
   if (session) {
     // Update session — fill customerName if missing, fix phone if was LID
@@ -305,6 +315,13 @@ async function resolveOrCreateSession(opts: {
     if (customerName && !session.customerName) updates.customerName = customerName;
     if (session.customerPhone !== phone && /^55\d{10,11}$/.test(phone)) {
       updates.customerPhone = phone;
+    }
+    // Store original LID so sync-history can use it to fetch chat history
+    if (phone !== originalFrom) {
+      const meta = (session.metadata ?? {}) as Record<string, unknown>;
+      if (!meta.originalLid || meta.originalLid !== originalFrom) {
+        updates.metadata = { ...meta, originalLid: originalFrom };
+      }
     }
     await db.update(conversationSessions).set(updates).where(eq(conversationSessions.id, session.id));
     return { ...session, ...updates } as typeof session;

@@ -67,6 +67,8 @@ async function processSyncHistory(job: Job<SyncHistoryJob>): Promise<{ synced: n
 
   // 2. Build chatId (phone@c.us or phone@lid)
   const phone = session.customerPhone;
+  const sessionMeta = (session.metadata ?? {}) as Record<string, unknown>;
+  const originalLid = sessionMeta.originalLid as string | undefined;
   let chatId = /^55\d{10,11}$/.test(phone) ? `${phone}@c.us` : `${phone}@lid`;
 
   // 3. Fetch messages from WPP via provider
@@ -80,7 +82,15 @@ async function processSyncHistory(job: Job<SyncHistoryJob>): Promise<{ synced: n
 
   let wppMessages = await provider.getMessages(instance.sessionName, chatId, 50);
 
-  // Fallback: if @lid returned 0 msgs and we can resolve the real phone, try @c.us
+  // Fallback 1: if @c.us returned 0 msgs and we have the original LID, try @lid
+  if (wppMessages.length === 0 && chatId.endsWith('@c.us') && originalLid) {
+    const lidChatId = `${originalLid}@lid`;
+    logger.info({ ...ctx, phone: chatId, lidChatId }, '@c.us returned 0 msgs, retrying with stored LID');
+    wppMessages = await provider.getMessages(instance.sessionName, lidChatId, 50);
+    if (wppMessages.length > 0) chatId = lidChatId;
+  }
+
+  // Fallback 2: if @lid returned 0 msgs and we can resolve the real phone, try @c.us
   if (wppMessages.length === 0 && chatId.endsWith('@lid') && provider.resolvePhone) {
     try {
       const realPhone = await provider.resolvePhone(instance.sessionName, phone);
