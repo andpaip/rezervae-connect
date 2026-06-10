@@ -577,6 +577,19 @@ export class WPPConnectProvider implements ChannelProvider {
     const s = m.sender as Record<string, unknown> | undefined;
     const msgType = (m.type as string) ?? 'chat';
 
+    // DEBUG: log sender fields to diagnose missing contact name for unknown contacts
+    logger.info({
+      sessionName,
+      from: (m.from as string),
+      senderPushname: s?.pushname,
+      senderName: s?.name,
+      senderFormattedName: s?.formattedName,
+      senderVerifiedName: s?.verifiedName,
+      msgNotifyName: (m as Record<string, unknown>).notifyName,
+      msgPushname: (m as Record<string, unknown>).pushname,
+      type: msgType,
+    }, 'DEBUG: inbound message sender info');
+
     // Download media for media messages
     const media = await this.downloadMediaSafe(client, m, msgType, sessionName);
 

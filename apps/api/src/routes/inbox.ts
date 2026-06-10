@@ -104,6 +104,103 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /**
+   * GET /api/v1/inbox/search?q=termo
+   * Full-text search across all messages, customer names and phones.
+   */
+  fastify.get<{
+    Querystring: { q: string; limit?: string };
+  }>('/api/v1/inbox/search', async (request) => {
+    const { tenantId } = request.tenant;
+    const q = request.query.q?.trim();
+    if (!q || q.length < 2) return { data: [] };
+    const limit = Math.min(Number(request.query.limit) || 20, 50);
+    const pattern = `%${q}%`;
+
+    // 1. Search messages by content
+    const msgMatches = await db
+      .select({
+        sessionId: conversationMessages.sessionId,
+        content: conversationMessages.content,
+        type: conversationMessages.type,
+        direction: conversationMessages.direction,
+        createdAt: conversationMessages.createdAt,
+      })
+      .from(conversationMessages)
+      .where(and(
+        eq(conversationMessages.tenantId, tenantId),
+        sql`${conversationMessages.content} ILIKE ${pattern}`,
+      ))
+      .orderBy(desc(conversationMessages.createdAt))
+      .limit(limit * 3);
+
+    // 2. Search sessions by name or phone
+    const sessionMatches = await db
+      .select({ id: conversationSessions.id })
+      .from(conversationSessions)
+      .where(and(
+        eq(conversationSessions.tenantId, tenantId),
+        sql`(${conversationSessions.customerName} ILIKE ${pattern} OR ${conversationSessions.customerPhone} ILIKE ${pattern})`,
+      ))
+      .limit(limit);
+
+    // Combine unique session IDs
+    const sessionIdSet = new Set<string>();
+    for (const m of msgMatches) if (m.sessionId) sessionIdSet.add(m.sessionId);
+    for (const s of sessionMatches) sessionIdSet.add(s.id);
+    const sessionIds = [...sessionIdSet];
+    if (sessionIds.length === 0) return { data: [] };
+
+    // 3. Fetch threads + session info for matched sessions
+    const threads = await db
+      .select({
+        threadId: inboxThreads.id,
+        conversationSessionId: inboxThreads.conversationSessionId,
+        status: inboxThreads.status,
+        unreadCount: inboxThreads.unreadCount,
+        lastMessageAt: inboxThreads.lastMessageAt,
+        customerPhone: conversationSessions.customerPhone,
+        customerName: conversationSessions.customerName,
+      })
+      .from(inboxThreads)
+      .leftJoin(conversationSessions, eq(inboxThreads.conversationSessionId, conversationSessions.id))
+      .where(and(
+        eq(inboxThreads.tenantId, tenantId),
+        inArray(inboxThreads.conversationSessionId!, sessionIds),
+      ));
+
+    // Build snippet map: sessionId → best matching snippet
+    const snippetMap = new Map<string, { content: string; type: string; direction: string; createdAt: Date | null }>();
+    for (const m of msgMatches) {
+      if (m.sessionId && !snippetMap.has(m.sessionId)) {
+        snippetMap.set(m.sessionId, { content: m.content?.substring(0, 120) ?? '', type: m.type, direction: m.direction, createdAt: m.createdAt });
+      }
+    }
+
+    // 4. Assemble results (dedup by threadId)
+    const seen = new Set<string>();
+    const results = threads
+      .filter((t) => { if (seen.has(t.threadId)) return false; seen.add(t.threadId); return true; })
+      .map((t) => {
+        const snippet = t.conversationSessionId ? snippetMap.get(t.conversationSessionId) : null;
+        return {
+          threadId: t.threadId,
+          customerPhone: t.customerPhone,
+          customerName: t.customerName,
+          status: t.status,
+          unreadCount: t.unreadCount,
+          lastMessageAt: t.lastMessageAt,
+          matchSnippet: snippet?.content ?? '',
+          matchType: snippet?.type ?? 'text',
+          matchDirection: snippet?.direction ?? 'inbound',
+          matchCreatedAt: snippet?.createdAt,
+        };
+      })
+      .slice(0, limit);
+
+    return { data: results };
+  });
+
+  /**
    * GET /api/v1/inbox/threads/:id/messages
    * Paginated message history for a thread.
    */
