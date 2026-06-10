@@ -104,8 +104,8 @@ export class WPPConnectProvider implements ChannelProvider {
       logger.warn({ sessionName, err }, 'Could not extract phone number from getWid');
       // Fallback: try to get from page context
       try {
-        const number = await (client as unknown as Record<string, CallableFunction>).page?.evaluate(
-          () => (window as unknown as Record<string, unknown>).Store?.Conn?.wid?.user,
+        const number = await (client as unknown as Record<string, any>).page?.evaluate(
+          () => (globalThis as any).Store?.Conn?.wid?.user,
         );
         if (number) {
           this.phones.set(sessionName, String(number));
@@ -220,7 +220,7 @@ export class WPPConnectProvider implements ChannelProvider {
       const contactJson = JSON.stringify(contact, null, 2);
       logger.info({ sessionName, lid: lidOrPhone }, 'getContact raw result');
       appendFileSync(debugFile, `\n[${new Date().toISOString()}] getContact(${chatId}):\n${contactJson}\n`);
-      const c = contact as Record<string, unknown>;
+      const c = contact as unknown as Record<string, unknown>;
       // Check common fields where phone might be
       const idStr = (c.id as string) ?? '';
       const match = idStr.match(/^(\d+)@c\.us$/);
@@ -239,7 +239,7 @@ export class WPPConnectProvider implements ChannelProvider {
     const client = this.getClientOrThrow(sessionName);
     try {
       const msgs = await client.getMessages(chatId, { count });
-      return (msgs as Array<Record<string, unknown>>)
+      return (msgs as unknown as Array<Record<string, unknown>>)
         .filter((m) => {
           const from = m.from as string | undefined;
           return from && !from.includes('status@broadcast') && !m.isGroupMsg;
