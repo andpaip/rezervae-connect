@@ -108,9 +108,10 @@ export interface InboxThreadUpdatedEvent extends BaseEvent {
   type: 'inbox.thread.updated';
   data: {
     threadId: string;
-    status: string;
+    status?: string;
     assignedUserId?: string | null;
-    action: 'claimed' | 'released' | 'closed' | 'reopened';
+    unreadCount?: number;
+    action: 'claimed' | 'released' | 'closed' | 'reopened' | 'read' | 'sync';
   };
 }
 

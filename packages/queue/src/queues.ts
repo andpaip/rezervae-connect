@@ -9,6 +9,7 @@ export const QUEUE_NAMES = {
   WEBHOOK_DELIVERY: 'webhook-delivery',
   AI_PROCESSING: 'ai-processing',
   CORE_EVENTS: 'core-events',
+  SYNC_HISTORY: 'sync-history',
   // DLQs
   SEND_MESSAGE_DLQ: 'send-message-dlq',
   CAMPAIGN_DLQ: 'campaign-dlq',
@@ -35,6 +36,7 @@ export function getQueues() {
     webhookDelivery: createQueue(QUEUE_NAMES.WEBHOOK_DELIVERY),
     aiProcessing: createQueue(QUEUE_NAMES.AI_PROCESSING),
     coreEvents: createQueue(QUEUE_NAMES.CORE_EVENTS),
+    syncHistory: createQueue(QUEUE_NAMES.SYNC_HISTORY),
     // DLQs
     sendMessageDlq: createQueue(QUEUE_NAMES.SEND_MESSAGE_DLQ),
     campaignDlq: createQueue(QUEUE_NAMES.CAMPAIGN_DLQ),

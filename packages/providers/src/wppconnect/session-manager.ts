@@ -33,6 +33,7 @@ export class SessionManager {
   private managedSessions = new Map<string, ManagedSession>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private incomingMessageHooks: IncomingMessageHook[] = [];
+  private deviceMessageHooks: IncomingMessageHook[] = [];
 
   constructor(provider: WPPConnectProvider) {
     this.provider = provider;
@@ -47,6 +48,14 @@ export class SessionManager {
    */
   onIncomingMessage(hook: IncomingMessageHook): void {
     this.incomingMessageHooks.push(hook);
+  }
+
+  /**
+   * Register a hook that receives device-sent messages (fromMe=true).
+   * Used to sync outbound messages sent from the physical phone.
+   */
+  onDeviceMessage(hook: IncomingMessageHook): void {
+    this.deviceMessageHooks.push(hook);
   }
 
   hasSession(sessionName: string): boolean {
@@ -357,6 +366,23 @@ export class SessionManager {
           await hook(session.tenantId, sessionName, message);
         } catch (err) {
           logger.error({ err, sessionName, from: message.from }, 'Incoming message hook failed');
+        }
+      }
+    });
+
+    // Device-sent messages (fromMe=true) — sync outbound from physical phone
+    this.provider.onDeviceMessage(async (sessionName, message) => {
+      const session = this.managedSessions.get(sessionName);
+      if (!session) return;
+      const trace = createTraceContext();
+
+      logger.info({ sessionName, to: message.from, type: message.type, ...trace }, 'Device-sent message');
+
+      for (const hook of this.deviceMessageHooks) {
+        try {
+          await hook(session.tenantId, sessionName, message);
+        } catch (err) {
+          logger.error({ err, sessionName, to: message.from }, 'Device message hook failed');
         }
       }
     });

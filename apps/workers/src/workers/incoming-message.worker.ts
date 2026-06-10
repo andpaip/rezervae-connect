@@ -23,6 +23,8 @@ export interface IncomingMessageJob {
   providerMessageId: string;
   traceId: string;
   correlationId: string;
+  /** True when message was sent FROM the device (outbound sync) */
+  fromMe?: boolean;
 }
 
 // Maps rowId prefixes to actions and auto-reply messages
@@ -235,6 +237,11 @@ async function enqueueAutoReply(
  */
 async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
   const { tenantId, from, body, messageType, sessionName, senderName, traceId, correlationId } = data;
+
+  // Use raw sender ID as-is (LID or phone). Each is unique per sender.
+  // WPPConnect v2 sends LIDs (internal WhatsApp IDs) — there's no reliable
+  // LID→phone mapping, so we use the LID directly as session key.
+  // The provider's formatRecipient() handles @lid vs @c.us when sending replies.
   const phone = from.replace(/@.*$/, '');
 
   // 1. Find or create conversation_session
@@ -269,10 +276,51 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     }).returning();
 
     logger.info({ tenantId, phone, sessionId: session.id }, 'Created conversation session');
+
+    // Try to resolve real phone from LID
+    if (!/^55\d{10,11}$/.test(phone)) {
+      try {
+        const { getProvider } = await import('../registry.js');
+        const provider = getProvider();
+        if (provider.resolvePhone) {
+          const realPhone = await provider.resolvePhone(sessionName, phone);
+          if (realPhone) {
+            await db.update(conversationSessions)
+              .set({ customerPhone: realPhone })
+              .where(eq(conversationSessions.id, session.id));
+            phone = realPhone;
+            logger.info({ tenantId, sessionId: session.id, realPhone }, 'Resolved real phone for session');
+          }
+        }
+      } catch { /* best effort — LID still works for messaging */ }
+    }
   } else {
+    // Update session — also fill customerName if missing + resolve phone if still LID
+    const updates: Record<string, unknown> = { lastMessageAt: new Date(), updatedAt: new Date() };
+    if (senderName && !session.customerName) {
+      updates.customerName = senderName;
+    }
+    // Resolve phone if session still has a LID
+    if (!/^55\d{10,11}$/.test(session.customerPhone)) {
+      try {
+        const { getProvider } = await import('../registry.js');
+        const provider = getProvider();
+        if (provider.resolvePhone) {
+          const realPhone = await provider.resolvePhone(sessionName, session.customerPhone);
+          if (realPhone) {
+            updates.customerPhone = realPhone;
+            phone = realPhone;
+            logger.info({ tenantId, sessionId: session.id, realPhone }, 'Resolved real phone for existing session');
+          }
+        }
+      } catch { /* best effort */ }
+    }
     await db.update(conversationSessions)
-      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .set(updates)
       .where(eq(conversationSessions.id, session.id));
+    if (updates.customerName) {
+      session = { ...session, customerName: senderName ?? null };
+    }
   }
 
   // 2. Persist message
@@ -283,6 +331,7 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     sender: phone,
     type: messageType === 'chat' ? 'text' : messageType,
     content: body,
+    providerMessageId: data.providerMessageId || undefined,
     status: 'delivered',
     deliveredAt: new Date(),
   }).returning();
@@ -312,11 +361,14 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
 
     logger.info({ tenantId, threadId: thread.id, sessionId: session.id }, 'Created inbox thread');
   } else {
+    const threadMeta = (thread.metadata ?? {}) as Record<string, unknown>;
+    const newName = senderName ?? threadMeta.customerName as string | null;
     await db.update(inboxThreads)
       .set({
         unreadCount: sql`${inboxThreads.unreadCount} + 1`,
         lastMessageAt: new Date(),
         updatedAt: new Date(),
+        metadata: { ...threadMeta, customerPhone: phone, customerName: newName },
       })
       .where(eq(inboxThreads.id, thread.id));
 
@@ -362,6 +414,136 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
   logger.info({ tenantId, threadId: thread.id, messageId: msg.id }, 'Inbox thread updated with new message');
 }
 
+/**
+ * Persist a message sent from the physical device (fromMe=true).
+ * Creates/finds session+thread like upsertInboxThread but:
+ * - direction = 'outbound', sender = 'device'
+ * - Does NOT increment unreadCount
+ * - Emits inbox.message.sent (not inbox.message)
+ */
+async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
+  const { tenantId, from, body, messageType, sessionName, traceId, correlationId } = data;
+
+  // `from` for device messages = the recipient (customer), not us
+  const phone = from.replace(/@.*$/, '');
+
+  // Skip system types
+  const SKIP_TYPES = ['notification_template', 'e2e_notification', 'protocol', 'ciphertext', 'revoked'];
+  if (SKIP_TYPES.includes(messageType)) return;
+  if (!body?.trim()) return;
+
+  // Find or create conversation_session (same logic as upsertInboxThread)
+  let [session] = await db
+    .select()
+    .from(conversationSessions)
+    .where(and(
+      eq(conversationSessions.tenantId, tenantId),
+      eq(conversationSessions.customerPhone, phone),
+      eq(conversationSessions.state, 'open'),
+    ))
+    .limit(1);
+
+  if (!session) {
+    const [inst] = await db
+      .select({ id: whatsappInstances.id })
+      .from(whatsappInstances)
+      .where(and(
+        eq(whatsappInstances.tenantId, tenantId),
+        eq(whatsappInstances.sessionName, sessionName),
+      ));
+
+    [session] = await db.insert(conversationSessions).values({
+      tenantId,
+      customerPhone: phone,
+      customerName: null,
+      instanceId: inst?.id ?? null,
+      state: 'open',
+      status: 'bot',
+      lastMessageAt: new Date(),
+    }).returning();
+  } else {
+    await db.update(conversationSessions)
+      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .where(eq(conversationSessions.id, session.id));
+  }
+
+  // Dedup: skip if an outbound message with same content was persisted in the last 30s
+  // (handles hub-sent messages that also trigger onAnyMessage when ID tracking misses)
+  const [recentDup] = await db.select({ id: conversationMessages.id })
+    .from(conversationMessages)
+    .where(and(
+      eq(conversationMessages.sessionId, session.id),
+      eq(conversationMessages.direction, 'outbound'),
+      eq(conversationMessages.content, body),
+      sql`${conversationMessages.createdAt} > NOW() - INTERVAL '30 seconds'`,
+    ))
+    .limit(1);
+
+  if (recentDup) {
+    logger.info({ tenantId, sessionId: session.id }, 'Device message skipped (duplicate of hub-sent)');
+    return;
+  }
+
+  // Persist message as outbound from device
+  const [msg] = await db.insert(conversationMessages).values({
+    sessionId: session.id,
+    tenantId,
+    direction: 'outbound',
+    sender: 'device',
+    type: messageType === 'chat' ? 'text' : messageType,
+    content: body,
+    providerMessageId: data.providerMessageId || undefined,
+    status: 'sent',
+    sentAt: new Date(),
+  }).returning();
+
+  // Find or create inbox thread (don't increment unread)
+  let [thread] = await db
+    .select()
+    .from(inboxThreads)
+    .where(and(
+      eq(inboxThreads.tenantId, tenantId),
+      eq(inboxThreads.conversationSessionId, session.id),
+      sql`${inboxThreads.status} != 'closed'`,
+    ))
+    .limit(1);
+
+  if (!thread) {
+    [thread] = await db.insert(inboxThreads).values({
+      tenantId,
+      conversationSessionId: session.id,
+      channel: 'whatsapp',
+      status: 'open',
+      priority: 'normal',
+      unreadCount: 0,
+      lastMessageAt: new Date(),
+      metadata: { customerPhone: phone },
+    }).returning();
+  } else {
+    await db.update(inboxThreads)
+      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .where(eq(inboxThreads.id, thread.id));
+  }
+
+  // Emit real-time event
+  eventBus.emit({
+    tenantId,
+    traceId,
+    correlationId,
+    timestamp: new Date().toISOString(),
+    version: '1',
+    type: 'inbox.message.sent' as const,
+    data: {
+      threadId: thread.id,
+      messageId: msg.id,
+      to: phone,
+      content: body,
+    },
+  });
+
+  logger.info({ tenantId, threadId: thread.id, messageId: msg.id }, 'Device-sent message persisted');
+}
+
 async function processIncomingMessage(job: Job<IncomingMessageJob>): Promise<void> {
   const { tenantId, from, body, messageType, traceId, correlationId, sessionName } = job.data;
   const ctx = { tenantId, from, messageType, traceId, correlationId, jobId: job.id };
@@ -382,6 +564,19 @@ async function processIncomingMessage(job: Job<IncomingMessageJob>): Promise<voi
   const selectedRowId = job.data.listResponse?.singleSelectReply?.selectedRowId;
   if (selectedRowId) {
     await handleListResponse(job.data, selectedRowId);
+    return;
+  }
+
+  // --- Device-sent messages (outbound sync from phone) ---
+  if (job.data.fromMe) {
+    await persistDeviceMessage(job.data);
+    return;
+  }
+
+  // --- Skip system notifications (not real customer messages) ---
+  const SKIP_TYPES = ['notification_template', 'e2e_notification', 'protocol', 'ciphertext', 'revoked'];
+  if (SKIP_TYPES.includes(messageType)) {
+    logger.debug(ctx, 'Skipping system notification for inbox');
     return;
   }
 

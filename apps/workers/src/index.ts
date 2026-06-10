@@ -10,6 +10,7 @@ import { createReconnectWorker } from './workers/reconnect.worker.js';
 import { createWebhookDeliveryWorker } from './workers/webhook-delivery.worker.js';
 import { createAIProcessingWorker } from './workers/ai-processing.worker.js';
 import { createCoreEventsWorker } from './workers/core-events.worker.js';
+import { createSyncHistoryWorker } from './workers/sync-history.worker.js';
 import { setupCoreWebhookSubscriptions } from './core-webhook-subscriber.js';
 
 const logger = createLogger('workers');
@@ -29,6 +30,7 @@ const workers = [
   createWebhookDeliveryWorker(),
   createAIProcessingWorker(),
   createCoreEventsWorker(),
+  createSyncHistoryWorker(),
 ];
 
 // Subscribe events → Core webhooks
@@ -55,6 +57,28 @@ sessionManager.onIncomingMessage(async (tenantId, sessionName, message) => {
   });
 });
 
+// Bridge: device-sent WhatsApp messages → same queue with fromMe flag
+sessionManager.onDeviceMessage(async (tenantId, sessionName, message) => {
+  const trace = createTraceContext();
+  const queues = getQueues();
+  await queues.incomingMessage.add('device-sent', {
+    tenantId,
+    sessionName,
+    from: message.from,
+    to: message.to,
+    body: message.body,
+    messageType: message.type,
+    isGroupMsg: message.isGroupMsg,
+    senderName: undefined,
+    listResponse: undefined,
+    timestamp: message.timestamp,
+    providerMessageId: message.id,
+    traceId: trace.traceId,
+    correlationId: trace.correlationId,
+    fromMe: true,
+  });
+});
+
 // Start heartbeat
 sessionManager.startHeartbeat();
 
@@ -67,9 +91,22 @@ import { eq } from 'drizzle-orm';
 
 (async () => {
   try {
-    const activeTenants = await db.select({ id: tenantsTable.id })
+    const activeTenants = await db.select({ id: tenantsTable.id, slug: tenantsTable.slug })
       .from(tenantsTable)
       .where(eq(tenantsTable.status, 'active'));
+
+    // Populate Redis slug→tenantId cache (used by WebSocket server for room join)
+    try {
+      const { getRedisClient } = await import('@rezervae-connect/queue');
+      const redis = getRedisClient();
+      for (const t of activeTenants) {
+        if (t.slug) await redis.hset('tenant-slugs', t.slug, t.id);
+      }
+      logger.info({ count: activeTenants.length }, 'Tenant slug cache populated in Redis');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to populate tenant slug cache');
+    }
+
     for (const t of activeTenants) {
       await sessionManager.restoreAllSessions(t.id);
     }

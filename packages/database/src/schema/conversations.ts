@@ -31,6 +31,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   type: varchar('type', { length: 30 }).default('text').notNull(),
   content: text('content'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
+  providerMessageId: varchar('provider_message_id', { length: 255 }),
   status: varchar('status', { length: 20 }).default('queued').notNull(),
   error: text('error'),
   sentAt: timestamp('sent_at'),

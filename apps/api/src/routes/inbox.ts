@@ -411,6 +411,85 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
     logger.info({ tenantId, threadId: id, reason }, 'Thread closed');
     return { success: true, status: 'closed' };
   });
+
+  /**
+   * POST /api/v1/inbox/threads/:id/read
+   * Mark thread as read (reset unread count, set readAt on messages).
+   */
+  fastify.post<{
+    Params: { id: string };
+  }>('/api/v1/inbox/threads/:id/read', async (request, reply) => {
+    const { tenantId, traceId, correlationId } = request.tenant;
+    const { id } = request.params;
+
+    const [thread] = await db
+      .select({ id: inboxThreads.id, conversationSessionId: inboxThreads.conversationSessionId })
+      .from(inboxThreads)
+      .where(and(eq(inboxThreads.id, id), eq(inboxThreads.tenantId, tenantId)));
+
+    if (!thread) {
+      return reply.code(404).send({ error: 'Thread not found' });
+    }
+
+    // Reset unread count
+    await db.update(inboxThreads)
+      .set({ unreadCount: 0, updatedAt: new Date() })
+      .where(eq(inboxThreads.id, id));
+
+    // Mark all unread inbound messages as read
+    await db.update(conversationMessages)
+      .set({ readAt: new Date() })
+      .where(and(
+        eq(conversationMessages.sessionId, thread.conversationSessionId!),
+        eq(conversationMessages.direction, 'inbound'),
+        sql`${conversationMessages.readAt} IS NULL`,
+      ));
+
+    // Emit event for other clients
+    eventBus.emit({
+      tenantId,
+      traceId,
+      correlationId,
+      timestamp: new Date().toISOString(),
+      version: '1',
+      type: 'inbox.thread.updated' as const,
+      data: { threadId: id, unreadCount: 0, action: 'read' as const },
+    });
+
+    logger.info({ tenantId, threadId: id }, 'Thread marked as read');
+    return { success: true };
+  });
+
+  /**
+   * POST /api/v1/inbox/threads/:id/sync
+   * Sync message history from WhatsApp for a thread (async via worker).
+   */
+  fastify.post<{
+    Params: { id: string };
+  }>('/api/v1/inbox/threads/:id/sync', async (request, reply) => {
+    const { tenantId, traceId, correlationId } = request.tenant;
+    const { id } = request.params;
+
+    // Verify thread belongs to tenant
+    const [thread] = await db
+      .select({ id: inboxThreads.id })
+      .from(inboxThreads)
+      .where(and(eq(inboxThreads.id, id), eq(inboxThreads.tenantId, tenantId)));
+
+    if (!thread) {
+      return reply.code(404).send({ error: 'Thread not found' });
+    }
+
+    const queues = getQueues();
+    await queues.syncHistory.add('sync', {
+      tenantId,
+      threadId: id,
+      traceId,
+      correlationId,
+    });
+
+    return { queued: true };
+  });
 };
 
 export default inboxRoutes;

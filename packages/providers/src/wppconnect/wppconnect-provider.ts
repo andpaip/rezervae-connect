@@ -1,5 +1,6 @@
 import wppconnect from '@wppconnect-team/wppconnect';
 import { execSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { createLogger } from '@rezervae-connect/shared';
 import type {
   ChannelProvider,
@@ -32,6 +33,9 @@ export class WPPConnectProvider implements ChannelProvider {
   private qrCallbacks: QRCallback[] = [];
   private statusCallbacks: StatusCallback[] = [];
   private messageCallbacks: MessageCallback[] = [];
+  private deviceMessageCallbacks: MessageCallback[] = [];
+  /** IDs of messages sent by the hub — used to skip them in onAnyMessage */
+  private hubSentIds = new Set<string>();
 
   async connect(config: ConnectionConfig): Promise<void> {
     const { sessionName, headless = true } = config;
@@ -114,11 +118,39 @@ export class WPPConnectProvider implements ChannelProvider {
 
     this.setStatus(sessionName, 'connected');
 
-    // Register incoming message handler
+    // Register incoming message handler (customer → us)
     client.onMessage((msg: unknown) => {
       const raw = this.mapToRawMessage(sessionName, msg);
       if (!raw) return;
       for (const cb of this.messageCallbacks) {
+        cb(sessionName, raw);
+      }
+    });
+
+    // Capture device-sent messages (us → customer, sent from phone)
+    (client as unknown as { onAnyMessage: (cb: (msg: unknown) => void) => void }).onAnyMessage((msg: unknown) => {
+      const m = msg as Record<string, unknown>;
+      if (!m.fromMe) return; // inbound already handled by onMessage
+      if (!m.to || (m.to as string).includes('status@broadcast')) return;
+      if (m.isGroupMsg) return;
+
+      // Skip messages sent by the hub (already persisted by the send endpoint)
+      const msgId = (m.id as string) ?? '';
+      if (this.hubSentIds.delete(msgId)) return;
+
+      const raw: RawIncomingMessage = {
+        from: (m.to as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
+        to: (m.from as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
+        body: (m.body as string) ?? '',
+        type: (m.type as string) ?? 'chat',
+        isGroupMsg: false,
+        sender: { pushname: undefined },
+        timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
+        id: (m.id as string) ?? '',
+        fromMe: true,
+      };
+
+      for (const cb of this.deviceMessageCallbacks) {
         cb(sessionName, raw);
       }
     });
@@ -153,11 +185,89 @@ export class WPPConnectProvider implements ChannelProvider {
     logger.info({ sessionName }, 'WPPConnect session disconnected');
   }
 
+  async resolvePhone(sessionName: string, lidOrPhone: string): Promise<string | null> {
+    const client = this.getClientOrThrow(sessionName);
+    const chatId = /^55\d{10,11}$/.test(lidOrPhone)
+      ? `${lidOrPhone}@c.us`
+      : `${lidOrPhone}@lid`;
+
+    const debugFile = '/tmp/resolve-phone-debug.log';
+
+    // Try getPnLidEntry first (LID↔phone mapping)
+    try {
+      const entry = await (client as unknown as {
+        getPnLidEntry: (id: string) => Promise<unknown>;
+      }).getPnLidEntry(chatId);
+      const entryJson = JSON.stringify(entry, null, 2);
+      logger.info({ sessionName, lid: lidOrPhone }, 'getPnLidEntry raw result');
+      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getPnLidEntry(${chatId}):\n${entryJson}\n`);
+      if (entry && typeof entry === 'object') {
+        const e = entry as Record<string, unknown>;
+        const pn = e.pnNumber as Record<string, unknown> | undefined;
+        const phone = (pn?.user as string) ?? null;
+        if (phone && /^55\d{10,11}$/.test(phone)) {
+          return phone;
+        }
+      }
+    } catch (err) {
+      logger.warn({ sessionName, lidOrPhone, err }, 'getPnLidEntry failed');
+      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getPnLidEntry(${chatId}) ERROR: ${err}\n`);
+    }
+
+    // Try getContact as fallback
+    try {
+      const contact = await client.getContact(chatId);
+      const contactJson = JSON.stringify(contact, null, 2);
+      logger.info({ sessionName, lid: lidOrPhone }, 'getContact raw result');
+      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getContact(${chatId}):\n${contactJson}\n`);
+      const c = contact as Record<string, unknown>;
+      // Check common fields where phone might be
+      const idStr = (c.id as string) ?? '';
+      const match = idStr.match(/^(\d+)@c\.us$/);
+      if (match && /^55\d{10,11}$/.test(match[1])) {
+        return match[1];
+      }
+    } catch (err) {
+      logger.warn({ sessionName, lidOrPhone, err }, 'getContact failed');
+      appendFileSync(debugFile, `\n[${new Date().toISOString()}] getContact(${chatId}) ERROR: ${err}\n`);
+    }
+
+    return null;
+  }
+
+  async getMessages(sessionName: string, chatId: string, count = 50): Promise<RawIncomingMessage[]> {
+    const client = this.getClientOrThrow(sessionName);
+    try {
+      const msgs = await client.getMessages(chatId, { count });
+      return (msgs as Array<Record<string, unknown>>)
+        .filter((m) => {
+          const from = m.from as string | undefined;
+          return from && !from.includes('status@broadcast') && !m.isGroupMsg;
+        })
+        .map((m) => ({
+          from: ((m.fromMe ? m.to : m.from) as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
+          to: ((m.fromMe ? m.from : m.to) as string)?.replace(/@(c\.us|lid)$/, '') ?? '',
+          body: (m.body as string) ?? '',
+          type: (m.type as string) ?? 'chat',
+          isGroupMsg: false,
+          sender: { pushname: ((m.sender as Record<string, unknown>)?.pushname as string) ?? undefined },
+          timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),
+          id: (m.id as string) ?? '',
+          fromMe: !!m.fromMe,
+        }));
+    } catch (err) {
+      logger.error({ sessionName, chatId, err }, 'Failed to fetch message history');
+      return [];
+    }
+  }
+
   async sendMessage(params: SendParams): Promise<SendResult> {
     const client = this.getClientOrThrow(params.sessionName);
     try {
-      const result = await client.sendText(`${params.to}@c.us`, params.content);
-      return { success: true, providerMessageId: (result as { id?: string }).id };
+      const result = await client.sendText(this.formatRecipient(params.to), params.content);
+      const id = (result as { id?: string }).id;
+      if (id) this.trackHubSent(id);
+      return { success: true, providerMessageId: id };
     } catch (err) {
       return this.handleSendError(params.sessionName, params.to, err, 'sendMessage');
     }
@@ -167,12 +277,14 @@ export class WPPConnectProvider implements ChannelProvider {
     const client = this.getClientOrThrow(params.sessionName);
     try {
       const result = await client.sendImage(
-        `${params.to}@c.us`,
+        this.formatRecipient(params.to),
         params.imageUrl,
         'image',
         params.caption,
       );
-      return { success: true, providerMessageId: (result as { id?: string }).id };
+      const id = (result as { id?: string }).id;
+      if (id) this.trackHubSent(id);
+      return { success: true, providerMessageId: id };
     } catch (err) {
       return this.handleSendError(params.sessionName, params.to, err, 'sendImage');
     }
@@ -181,12 +293,14 @@ export class WPPConnectProvider implements ChannelProvider {
   async sendListMessage(params: SendListParams): Promise<SendResult> {
     const client = this.getClientOrThrow(params.sessionName);
     try {
-      const result = await client.sendListMessage(`${params.to}@c.us`, {
+      const result = await client.sendListMessage(this.formatRecipient(params.to), {
         buttonText: params.buttonText,
         description: params.content,
         sections: params.sections,
       });
-      return { success: true, providerMessageId: (result as { id?: string }).id };
+      const id = (result as { id?: string }).id;
+      if (id) this.trackHubSent(id);
+      return { success: true, providerMessageId: id };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       // WPPConnect v2 sends the list successfully but crashes on post-send @lid tracking.
@@ -345,6 +459,10 @@ export class WPPConnectProvider implements ChannelProvider {
     this.messageCallbacks.push(callback);
   }
 
+  onDeviceMessage(callback: MessageCallback): void {
+    this.deviceMessageCallbacks.push(callback);
+  }
+
   // --- Internal helpers ---
 
   /**
@@ -369,6 +487,19 @@ export class WPPConnectProvider implements ChannelProvider {
     for (const cb of this.statusCallbacks) {
       cb(sessionName, status);
     }
+  }
+
+  /**
+   * Format recipient for WPPConnect: BR phone → @c.us, LID → @lid.
+   */
+  private formatRecipient(to: string): string {
+    return /^55\d{10,11}$/.test(to) ? `${to}@c.us` : `${to}@lid`;
+  }
+
+  /** Track a hub-sent message ID so onAnyMessage skips it (auto-expires after 30s) */
+  private trackHubSent(id: string): void {
+    this.hubSentIds.add(id);
+    setTimeout(() => this.hubSentIds.delete(id), 30_000);
   }
 
   private getClientOrThrow(sessionName: string): WPPClient {

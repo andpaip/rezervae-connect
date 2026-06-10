@@ -101,6 +101,8 @@ export interface RawIncomingMessage {
   };
   timestamp: number;
   id: string;
+  /** True when message was sent FROM the device (outbound captured via onAnyMessage) */
+  fromMe?: boolean;
 }
 
 export interface ChannelProvider {
@@ -113,6 +115,11 @@ export interface ChannelProvider {
   onQRCode(callback: (session: string, qr: string) => void): void;
   onStatusChange(callback: (session: string, status: InstanceStatus) => void): void;
   onMessage(callback: (session: string, message: RawIncomingMessage) => void): void;
+  onDeviceMessage(callback: (session: string, message: RawIncomingMessage) => void): void;
+  /** Fetch recent messages from a chat (used for history sync). */
+  getMessages?(sessionName: string, chatId: string, count?: number): Promise<RawIncomingMessage[]>;
+  /** Resolve real phone number from a LID (WhatsApp internal ID). */
+  resolvePhone?(sessionName: string, lidOrPhone: string): Promise<string | null>;
 }
 
 // === Internal Auth ===
