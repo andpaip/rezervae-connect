@@ -77,6 +77,43 @@ export interface ConversationAssignedEvent extends BaseEvent {
   data: { sessionId: string; fromUserId?: string; toUserId: string; reason: string };
 }
 
+// --- Inbox events ---
+
+export interface InboxMessageEvent extends BaseEvent {
+  type: 'inbox.message';
+  data: {
+    threadId: string;
+    messageId: string;
+    sessionName: string;
+    from: string;
+    body: string;
+    messageType: string;
+    customerPhone: string;
+    customerName: string;
+    unreadCount: number;
+  };
+}
+
+export interface InboxMessageSentEvent extends BaseEvent {
+  type: 'inbox.message.sent';
+  data: {
+    threadId: string;
+    messageId: string;
+    to: string;
+    content: string;
+  };
+}
+
+export interface InboxThreadUpdatedEvent extends BaseEvent {
+  type: 'inbox.thread.updated';
+  data: {
+    threadId: string;
+    status: string;
+    assignedUserId?: string | null;
+    action: 'claimed' | 'released' | 'closed' | 'reopened';
+  };
+}
+
 export type ConnectEvent =
   | MessageReceivedEvent
   | MessageSentEvent
@@ -89,6 +126,9 @@ export type ConnectEvent =
   | CampaignProgressEvent
   | CampaignFinishedEvent
   | ConversationCreatedEvent
-  | ConversationAssignedEvent;
+  | ConversationAssignedEvent
+  | InboxMessageEvent
+  | InboxMessageSentEvent
+  | InboxThreadUpdatedEvent;
 
 export type ConnectEventType = ConnectEvent['type'];

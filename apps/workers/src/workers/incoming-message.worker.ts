@@ -1,7 +1,8 @@
 import { Worker, type Job } from 'bullmq';
 import { eq, and, sql } from 'drizzle-orm';
 import { getRedisConnectionOptions, getRedisClient, getQueues, QUEUE_NAMES } from '@rezervae-connect/queue';
-import { db, auditLogs, whatsappInstances } from '@rezervae-connect/database';
+import { db, auditLogs, whatsappInstances, conversationSessions, conversationMessages, inboxThreads } from '@rezervae-connect/database';
+import { eventBus } from '@rezervae-connect/events';
 import { createLogger } from '@rezervae-connect/shared';
 
 const logger = createLogger('incoming-message-worker');
@@ -228,6 +229,139 @@ async function enqueueAutoReply(
   });
 }
 
+/**
+ * Find or create a conversation session + inbox thread for an inbound message.
+ * Persists the message in conversation_messages and emits inbox:message for real-time.
+ */
+async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
+  const { tenantId, from, body, messageType, sessionName, senderName, traceId, correlationId } = data;
+  const phone = from.replace(/@.*$/, '');
+
+  // 1. Find or create conversation_session
+  let [session] = await db
+    .select()
+    .from(conversationSessions)
+    .where(and(
+      eq(conversationSessions.tenantId, tenantId),
+      eq(conversationSessions.customerPhone, phone),
+      eq(conversationSessions.state, 'open'),
+    ))
+    .limit(1);
+
+  if (!session) {
+    // Resolve instance ID
+    const [inst] = await db
+      .select({ id: whatsappInstances.id })
+      .from(whatsappInstances)
+      .where(and(
+        eq(whatsappInstances.tenantId, tenantId),
+        eq(whatsappInstances.sessionName, sessionName),
+      ));
+
+    [session] = await db.insert(conversationSessions).values({
+      tenantId,
+      customerPhone: phone,
+      customerName: senderName ?? null,
+      instanceId: inst?.id ?? null,
+      state: 'open',
+      status: 'bot',
+      lastMessageAt: new Date(),
+    }).returning();
+
+    logger.info({ tenantId, phone, sessionId: session.id }, 'Created conversation session');
+  } else {
+    await db.update(conversationSessions)
+      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .where(eq(conversationSessions.id, session.id));
+  }
+
+  // 2. Persist message
+  const [msg] = await db.insert(conversationMessages).values({
+    sessionId: session.id,
+    tenantId,
+    direction: 'inbound',
+    sender: phone,
+    type: messageType === 'chat' ? 'text' : messageType,
+    content: body,
+    status: 'delivered',
+    deliveredAt: new Date(),
+  }).returning();
+
+  // 3. Find or create inbox_thread
+  let [thread] = await db
+    .select()
+    .from(inboxThreads)
+    .where(and(
+      eq(inboxThreads.tenantId, tenantId),
+      eq(inboxThreads.conversationSessionId, session.id),
+      sql`${inboxThreads.status} != 'closed'`,
+    ))
+    .limit(1);
+
+  if (!thread) {
+    [thread] = await db.insert(inboxThreads).values({
+      tenantId,
+      conversationSessionId: session.id,
+      channel: 'whatsapp',
+      status: 'open',
+      priority: 'normal',
+      unreadCount: 1,
+      lastMessageAt: new Date(),
+      metadata: { customerPhone: phone, customerName: senderName ?? null },
+    }).returning();
+
+    logger.info({ tenantId, threadId: thread.id, sessionId: session.id }, 'Created inbox thread');
+  } else {
+    await db.update(inboxThreads)
+      .set({
+        unreadCount: sql`${inboxThreads.unreadCount} + 1`,
+        lastMessageAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(inboxThreads.id, thread.id));
+
+    thread = { ...thread, unreadCount: (thread.unreadCount ?? 0) + 1, lastMessageAt: new Date() };
+  }
+
+  // 4. Emit real-time events
+  const now = new Date().toISOString();
+  const customerName = senderName ?? session.customerName ?? '';
+
+  // Legacy event (existing consumers)
+  eventBus.emit({
+    tenantId,
+    traceId,
+    correlationId,
+    timestamp: now,
+    version: '1',
+    type: 'message.received' as const,
+    data: { sessionName, from: phone, body, messageType, customerPhone: phone, customerName },
+  });
+
+  // Inbox-specific event (Socket.IO → FE)
+  eventBus.emit({
+    tenantId,
+    traceId,
+    correlationId,
+    timestamp: now,
+    version: '1',
+    type: 'inbox.message' as const,
+    data: {
+      threadId: thread.id,
+      messageId: msg.id,
+      sessionName,
+      from: phone,
+      body,
+      messageType,
+      customerPhone: phone,
+      customerName,
+      unreadCount: thread.unreadCount ?? 1,
+    },
+  });
+
+  logger.info({ tenantId, threadId: thread.id, messageId: msg.id }, 'Inbox thread updated with new message');
+}
+
 async function processIncomingMessage(job: Job<IncomingMessageJob>): Promise<void> {
   const { tenantId, from, body, messageType, traceId, correlationId, sessionName } = job.data;
   const ctx = { tenantId, from, messageType, traceId, correlationId, jobId: job.id };
@@ -251,10 +385,8 @@ async function processIncomingMessage(job: Job<IncomingMessageJob>): Promise<voi
     return;
   }
 
-  // TODO: Fase 5A — Orchestrator will handle routing:
-  // 1. Find/create conversation_session
-  // 2. If text → route to AI/bot/human
-  logger.info(ctx, 'Incoming message processed (routing stub)');
+  // --- Find or create conversation session + inbox thread ---
+  await upsertInboxThread(job.data);
 }
 
 export function createIncomingMessageWorker() {

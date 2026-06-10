@@ -9,6 +9,9 @@ import type {
   InstanceDisconnectedEvent,
   CampaignProgressEvent,
   CampaignFinishedEvent,
+  InboxMessageEvent,
+  InboxMessageSentEvent,
+  InboxThreadUpdatedEvent,
   ConnectEvent,
 } from '@rezervae-connect/events';
 
@@ -100,6 +103,23 @@ eventBus.on('message.failed', (event) => {
     type: 'failed',
     data: (event as ConnectEvent & { data: unknown }).data,
   });
+});
+
+// --- Inbox events ---
+
+eventBus.on('inbox.message', (event) => {
+  const e = event as InboxMessageEvent;
+  emitToTenant(e.tenantId, 'inbox:message', e.data);
+});
+
+eventBus.on('inbox.message.sent', (event) => {
+  const e = event as InboxMessageSentEvent;
+  emitToTenant(e.tenantId, 'inbox:message:sent', e.data);
+});
+
+eventBus.on('inbox.thread.updated', (event) => {
+  const e = event as InboxThreadUpdatedEvent;
+  emitToTenant(e.tenantId, 'inbox:thread:updated', e.data);
 });
 
 // --- Start server ---
