@@ -242,7 +242,7 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
   // WPPConnect v2 sends LIDs (internal WhatsApp IDs) — there's no reliable
   // LID→phone mapping, so we use the LID directly as session key.
   // The provider's formatRecipient() handles @lid vs @c.us when sending replies.
-  const phone = from.replace(/@.*$/, '');
+  let phone = from.replace(/@.*$/, '');
 
   // 1. Find or create conversation_session
   let [session] = await db
