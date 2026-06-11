@@ -68,25 +68,23 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
     const lastMsgMap = new Map<string, { content: string | null; type: string | null; direction: string; createdAt: Date | null }>();
 
     if (sessionIds.length > 0) {
-      // Use Drizzle query but limit results: fetch only most recent N messages per batch
-      // then deduplicate in JS. With the idx_convmsg_session_created index this is efficient.
-      const lastMsgs = await db
-        .select({
-          sessionId: conversationMessages.sessionId,
-          content: conversationMessages.content,
-          type: conversationMessages.type,
-          direction: conversationMessages.direction,
-          createdAt: conversationMessages.createdAt,
-        })
-        .from(conversationMessages)
-        .where(inArray(conversationMessages.sessionId, sessionIds))
-        .orderBy(desc(conversationMessages.createdAt))
-        .limit(sessionIds.length * 2);
+      // DISTINCT ON guarantees exactly 1 row per session (the latest message)
+      const lastMsgs: { session_id: string; content: string | null; type: string | null; direction: string; created_at: string | null }[] =
+        await db.execute(sql`
+          SELECT DISTINCT ON (session_id)
+            session_id, content, type, direction, created_at
+          FROM conversation_messages
+          WHERE session_id = ANY(${sessionIds})
+          ORDER BY session_id, created_at DESC
+        `);
 
       for (const m of lastMsgs) {
-        if (m.sessionId && !lastMsgMap.has(m.sessionId)) {
-          lastMsgMap.set(m.sessionId, { content: m.content, type: m.type, direction: m.direction, createdAt: m.createdAt });
-        }
+        lastMsgMap.set(m.session_id, {
+          content: m.content,
+          type: m.type,
+          direction: m.direction,
+          createdAt: m.created_at ? new Date(m.created_at) : null,
+        });
       }
     }
 
