@@ -309,6 +309,9 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
         type,
         content,
         status: 'queued',
+        metadata: type === 'image' && imageUrl
+          ? { base64: imageUrl, mimetype: 'image/jpeg', caption: content || undefined }
+          : {},
       }).returning();
 
       const [log] = await tx.insert(messageLogs).values({
@@ -317,7 +320,10 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
         direction: 'outbound',
         recipient: session.customerPhone,
         status: 'queued',
-        payload: { content, type, source: 'inbox', threadId: id, conversationMessageId: msg.id },
+        payload: {
+          content, type, source: 'inbox', threadId: id, conversationMessageId: msg.id,
+          ...(type === 'image' && { imageUrl, caption: content || undefined }),
+        },
         traceId,
         correlationId,
         queuedAt: new Date(),
