@@ -257,8 +257,11 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
     const { id } = request.params;
     const { content, type = 'text', imageUrl } = request.body ?? {};
 
-    if (!content) {
+    if (!content && type !== 'image') {
       return reply.code(400).send({ error: 'content is required' });
+    }
+    if (type === 'image' && !imageUrl) {
+      return reply.code(400).send({ error: 'imageUrl is required for image messages' });
     }
 
     // Load thread + session
@@ -335,9 +338,10 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       sessionName: instance.sessionName,
       messageLogId: log.id,
       to: session.customerPhone,
-      content,
+      content: content ?? '',
       type,
       imageUrl,
+      caption: type === 'image' ? (content || '') : undefined,
       traceId,
       correlationId,
     });
