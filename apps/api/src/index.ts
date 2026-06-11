@@ -20,7 +20,7 @@ import inboxRoutes from './routes/inbox.js';
 
 const logger = createLogger('api');
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: 15_728_640 });
 
 // Capture raw body for HMAC signature validation
 // Must be registered before content-type parsers run
