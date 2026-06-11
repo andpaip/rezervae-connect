@@ -69,12 +69,13 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (sessionIds.length > 0) {
       // DISTINCT ON guarantees exactly 1 row per session (the latest message)
+      const idList = sql.join(sessionIds.map(id => sql`${id}`), sql`, `);
       const lastMsgs: { session_id: string; content: string | null; type: string | null; direction: string; created_at: string | null }[] =
         await db.execute(sql`
           SELECT DISTINCT ON (session_id)
             session_id, content, type, direction, created_at
           FROM conversation_messages
-          WHERE session_id = ANY(${sessionIds})
+          WHERE session_id IN (${idList})
           ORDER BY session_id, created_at DESC
         `);
 
