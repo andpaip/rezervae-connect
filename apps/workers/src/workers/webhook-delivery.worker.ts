@@ -35,7 +35,7 @@ function buildCoreHmacHeaders(
   traceId: string,
   correlationId: string,
 ): Record<string, string> {
-  const secret = process.env.CORE_SECRET ?? 'dev-secret';
+  const secret = process.env.INTERNAL_SECRET ?? 'dev-secret';
   const timestamp = Date.now().toString();
 
   // Extract path from full URL
