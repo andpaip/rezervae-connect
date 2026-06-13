@@ -1,7 +1,7 @@
 import { eq, and, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { db } from '@rezervae-connect/database';
-import { whatsappInstances, auditLogs } from '@rezervae-connect/database';
+import { whatsappInstances, auditLogs, conversationSessions } from '@rezervae-connect/database';
 import { eventBus } from '@rezervae-connect/events';
 import {
   createLogger,
@@ -326,6 +326,18 @@ export class SessionManager {
         session.isReconnecting = false;
         const phone = this.provider.getPhone(sessionName);
         if (phone) {
+          // Detect phone change — close old sessions if number changed
+          const [currentInst] = await db.select({ phone: whatsappInstances.phone })
+            .from(whatsappInstances).where(eq(whatsappInstances.id, session.instanceId));
+          if (currentInst?.phone && currentInst.phone !== phone) {
+            const closed = await db.update(conversationSessions)
+              .set({ state: 'closed', updatedAt: new Date() })
+              .where(and(
+                eq(conversationSessions.instanceId, session.instanceId),
+                eq(conversationSessions.state, 'open'),
+              ));
+            logger.info({ instanceId: session.instanceId, oldPhone: currentInst.phone, newPhone: phone }, 'Phone changed — closed old sessions');
+          }
           updates.phone = phone;
         }
       }
