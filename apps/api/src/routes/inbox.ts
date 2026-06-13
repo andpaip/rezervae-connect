@@ -54,6 +54,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
         // Join session fields
         customerPhone: conversationSessions.customerPhone,
         customerName: conversationSessions.customerName,
+        customerPhotoUrl: conversationSessions.customerPhotoUrl,
         sessionState: conversationSessions.state,
       })
       .from(inboxThreads)

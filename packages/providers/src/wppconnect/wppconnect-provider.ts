@@ -578,18 +578,9 @@ export class WPPConnectProvider implements ChannelProvider {
     const s = m.sender as Record<string, unknown> | undefined;
     const msgType = (m.type as string) ?? 'chat';
 
-    // DEBUG: log sender fields to diagnose missing contact name for unknown contacts
-    logger.info({
-      sessionName,
-      from: (m.from as string),
-      senderPushname: s?.pushname,
-      senderName: s?.name,
-      senderFormattedName: s?.formattedName,
-      senderVerifiedName: s?.verifiedName,
-      msgNotifyName: (m as Record<string, unknown>).notifyName,
-      msgPushname: (m as Record<string, unknown>).pushname,
-      type: msgType,
-    }, 'DEBUG: inbound message sender info');
+    // Extract profile picture URL from sender
+    const profilePicObj = s?.profilePicThumbObj as Record<string, unknown> | undefined;
+    const profilePicUrl = (profilePicObj?.img as string) ?? (profilePicObj?.eurl as string) ?? undefined;
 
     // Download media for media messages
     const media = await this.downloadMediaSafe(client, m, msgType, sessionName);
@@ -606,6 +597,7 @@ export class WPPConnectProvider implements ChannelProvider {
           ?? s?.formattedName as string | undefined
           ?? s?.verifiedName as string | undefined
           ?? (m as Record<string, unknown>).notifyName as string | undefined,
+        profilePicUrl,
       },
       listResponse: m.listResponse as RawIncomingMessage['listResponse'],
       timestamp: (m.timestamp as number) ?? Math.floor(Date.now() / 1000),

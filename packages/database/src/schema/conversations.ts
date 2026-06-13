@@ -9,6 +9,7 @@ export const conversationSessions = pgTable('conversation_sessions', {
   customerPhone: varchar('customer_phone', { length: 20 }).notNull(),
   customerName: varchar('customer_name', { length: 255 }),
   customerExternalId: varchar('customer_external_id', { length: 100 }),
+  customerPhotoUrl: varchar('customer_photo_url', { length: 500 }),
   instanceId: uuid('instance_id').references(() => whatsappInstances.id),
   assignedUserId: varchar('assigned_user_id', { length: 100 }),
   state: varchar('state', { length: 50 }).default('open').notNull(),

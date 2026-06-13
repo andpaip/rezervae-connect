@@ -16,6 +16,7 @@ export interface IncomingMessageJob {
   messageType: string;
   isGroupMsg: boolean;
   senderName?: string;
+  senderProfilePicUrl?: string;
   listResponse?: {
     singleSelectReply?: { selectedRowId?: string };
   };
@@ -280,8 +281,9 @@ async function resolveOrCreateSession(opts: {
   originalFrom: string;
   sessionName: string;
   customerName: string | null;
+  customerPhotoUrl?: string;
 }): Promise<typeof conversationSessions.$inferSelect> {
-  const { tenantId, phone, originalFrom, sessionName, customerName } = opts;
+  const { tenantId, phone, originalFrom, sessionName, customerName, customerPhotoUrl } = opts;
 
   // 1. Try to find existing open session
   // Search by real phone first, then fall back to LID (originalFrom).
@@ -313,6 +315,7 @@ async function resolveOrCreateSession(opts: {
     // Update session — fill customerName if missing, fix phone if was LID
     const updates: Record<string, unknown> = { lastMessageAt: new Date(), updatedAt: new Date() };
     if (customerName && !session.customerName) updates.customerName = customerName;
+    if (customerPhotoUrl) updates.customerPhotoUrl = customerPhotoUrl;
     if (session.customerPhone !== phone && /^55\d{10,11}$/.test(phone)) {
       updates.customerPhone = phone;
     }
@@ -341,6 +344,7 @@ async function resolveOrCreateSession(opts: {
       tenantId,
       customerPhone: phone,
       customerName,
+      customerPhotoUrl: customerPhotoUrl ?? null,
       instanceId: inst?.id ?? null,
       state: 'open',
       status: 'bot',
@@ -428,7 +432,7 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     logger.info({ tenantId, lid: originalFrom, realPhone: phone }, 'Resolved LID to real phone');
   }
 
-  const session = await resolveOrCreateSession({ tenantId, phone, originalFrom, sessionName, customerName: senderName ?? null });
+  const session = await resolveOrCreateSession({ tenantId, phone, originalFrom, sessionName, customerName: senderName ?? null, customerPhotoUrl: data.senderProfilePicUrl });
 
   // 2. Persist message (with media metadata if present)
   const msgMetadata: Record<string, unknown> = {};
@@ -523,7 +527,7 @@ async function persistDeviceMessage(data: IncomingMessageJob): Promise<void> {
   // Resolve contact name for new sessions or sessions without a name
   const contactName = await resolveContactName(sessionName, originalFrom);
 
-  const session = await resolveOrCreateSession({ tenantId, phone, originalFrom, sessionName, customerName: contactName });
+  const session = await resolveOrCreateSession({ tenantId, phone, originalFrom, sessionName, customerName: contactName, customerPhotoUrl: data.senderProfilePicUrl });
 
   // Dedup: skip if an outbound message with same content was persisted in the last 30s
   // (handles hub-sent messages that also trigger onAnyMessage when ID tracking misses)

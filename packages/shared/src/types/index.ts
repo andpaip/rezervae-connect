@@ -102,7 +102,7 @@ export interface RawIncomingMessage {
   body: string;
   type: string;
   isGroupMsg: boolean;
-  sender: { pushname?: string; contactName?: string };
+  sender: { pushname?: string; contactName?: string; profilePicUrl?: string };
   listResponse?: {
     singleSelectReply?: {
       selectedRowId?: string;
