@@ -63,6 +63,7 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       .where(and(
         ...conditions,
         or(isNull(conversationSessions.instanceId), eq(whatsappInstances.status, 'connected')),
+        or(isNull(conversationSessions.state), eq(conversationSessions.state, 'open')),
       ))
       .orderBy(desc(inboxThreads.lastMessageAt))
       .limit(limit)
