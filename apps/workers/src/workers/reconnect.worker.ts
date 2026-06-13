@@ -38,6 +38,13 @@ async function processReconnect(job: Job<ReconnectJob>): Promise<void> {
 
   logger.info(ctx, 'Processing reconnect job');
 
+  // Skip if session is already busy (connecting or waiting for QR scan).
+  // This prevents duplicate jobs from destroying an in-progress connection.
+  if (sessionManager.isSessionBusy?.(sessionName)) {
+    logger.info(ctx, 'Session already busy (connecting/qr_ready), skipping duplicate job');
+    return;
+  }
+
   // SessionManager handles session lifecycle.
   // For new connections (no managed session yet), use createSession.
   // For existing sessions, use reconnectSession.

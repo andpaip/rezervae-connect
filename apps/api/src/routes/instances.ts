@@ -89,8 +89,8 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (!instance) return reply.code(404).send({ error: 'Instance not found' });
 
-    if (instance.status === 'connected') {
-      return reply.code(409).send({ error: 'Instance already connected' });
+    if (['connected', 'connecting', 'qr_ready'].includes(instance.status)) {
+      return reply.code(409).send({ error: `Instance already ${instance.status}` });
     }
 
     // Clear stale QR, reset reconnect counter, and set connecting status synchronously
@@ -110,7 +110,7 @@ const instanceRoutes: FastifyPluginAsync = async (fastify) => {
       attempt: 0,
       traceId,
       correlationId,
-    }, { jobId: `connect-${instance.id}-${Date.now()}` });
+    }, { jobId: `connect-${instance.id}`, removeOnComplete: true, removeOnFail: true });
 
     await db.insert(auditLogs).values({
       tenantId,

@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { createLogger } from '@rezervae-connect/shared';
+import { eventBus } from '@rezervae-connect/events';
 import internalAuth from './plugins/internal-auth.js';
 import tenantRateLimit from './plugins/tenant-rate-limit.js';
 import safetyGuard from './plugins/safety-guard.js';
@@ -19,6 +20,9 @@ import adminRoutes from './routes/admin.js';
 import inboxRoutes from './routes/inbox.js';
 
 const logger = createLogger('api');
+
+// Connect eventBus to Redis for cross-process events
+await eventBus.connectRedis();
 
 const app = Fastify({ logger: true, bodyLimit: 15_728_640 });
 

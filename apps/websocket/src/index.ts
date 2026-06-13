@@ -19,6 +19,9 @@ import type {
 
 const logger = createLogger('websocket');
 
+// Connect eventBus to Redis for cross-process events
+await eventBus.connectRedis();
+
 const httpServer = createServer();
 
 // CORS whitelist: allow known origins + localhost for dev

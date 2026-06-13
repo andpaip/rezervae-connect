@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createLogger, createTraceContext } from '@rezervae-connect/shared';
+import { eventBus } from '@rezervae-connect/events';
 import { WPPConnectProvider, SessionManager } from '@rezervae-connect/providers';
 import { getQueues } from '@rezervae-connect/queue';
 import { setProvider, setSessionManager } from './registry.js';
@@ -14,6 +15,9 @@ import { createSyncHistoryWorker } from './workers/sync-history.worker.js';
 import { setupCoreWebhookSubscriptions } from './core-webhook-subscriber.js';
 
 const logger = createLogger('workers');
+
+// Connect eventBus to Redis for cross-process events
+await eventBus.connectRedis();
 
 // Initialize provider + session manager
 const provider = new WPPConnectProvider();

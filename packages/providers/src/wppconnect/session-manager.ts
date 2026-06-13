@@ -63,6 +63,14 @@ export class SessionManager {
     return this.managedSessions.has(sessionName);
   }
 
+  /** True when a session exists AND is actively connecting or waiting for QR scan. */
+  isSessionBusy(sessionName: string): boolean {
+    const session = this.managedSessions.get(sessionName);
+    if (!session) return false;
+    const status = this.provider.getStatus(sessionName);
+    return ['connecting', 'qr_ready'].includes(status ?? '');
+  }
+
   async createSession(tenantId: string, instanceId: string, sessionName: string): Promise<void> {
     const trace = createTraceContext();
 

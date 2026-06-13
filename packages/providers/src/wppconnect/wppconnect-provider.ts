@@ -75,6 +75,7 @@ export class WPPConnectProvider implements ChannelProvider {
       },
 
       catchQR: (base64Qr: string) => {
+        logger.info({ sessionName, qrLength: base64Qr?.length, callbackCount: this.qrCallbacks.length }, 'catchQR fired');
         this.setStatus(sessionName, 'qr_ready');
         for (const cb of this.qrCallbacks) {
           cb(sessionName, base64Qr);
