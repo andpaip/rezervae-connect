@@ -19,6 +19,7 @@ export interface MessageReceivedEvent extends BaseEvent {
     channel?: string;
     direction?: string;
     providerMessageId?: string;
+    customerPhotoUrl?: string | null;
   };
 }
 

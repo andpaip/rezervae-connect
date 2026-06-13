@@ -475,7 +475,7 @@ async function upsertInboxThread(data: IncomingMessageJob): Promise<void> {
     timestamp: now,
     version: '1',
     type: 'message.received' as const,
-    data: { sessionName, from: phone, body, messageType, customerPhone: phone, customerName },
+    data: { sessionName, from: phone, body, messageType, customerPhone: phone, customerName, customerPhotoUrl: session.customerPhotoUrl },
   });
 
   // Inbox-specific event (Socket.IO → FE)
