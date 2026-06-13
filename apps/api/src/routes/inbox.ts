@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { eq, and, desc, sql, ne, inArray } from 'drizzle-orm';
+import { eq, and, or, desc, sql, ne, inArray, isNull } from 'drizzle-orm';
 import {
   db,
   inboxThreads,
@@ -59,7 +59,11 @@ const inboxRoutes: FastifyPluginAsync = async (fastify) => {
       })
       .from(inboxThreads)
       .leftJoin(conversationSessions, eq(inboxThreads.conversationSessionId, conversationSessions.id))
-      .where(and(...conditions))
+      .leftJoin(whatsappInstances, eq(conversationSessions.instanceId, whatsappInstances.id))
+      .where(and(
+        ...conditions,
+        or(isNull(conversationSessions.instanceId), eq(whatsappInstances.status, 'connected')),
+      ))
       .orderBy(desc(inboxThreads.lastMessageAt))
       .limit(limit)
       .offset(offset);
