@@ -1,7 +1,8 @@
 import { createHmac } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnectionOptions, QUEUE_NAMES } from '@rezervae-connect/queue';
-import { db, auditLogs } from '@rezervae-connect/database';
+import { db, auditLogs, tenants } from '@rezervae-connect/database';
+import { eq } from 'drizzle-orm';
 import { createLogger } from '@rezervae-connect/shared';
 
 const logger = createLogger('webhook-delivery-worker');
@@ -75,7 +76,13 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJob>): Promise<voi
 
   // Add HMAC auth for Core API targets
   if (isCoreTarget(url)) {
-    const hmacHeaders = buildCoreHmacHeaders('POST', url, body, tenantId, traceId, correlationId);
+    // Resolve externalId: Core (Laravel) uses its own tenant UUID, not Connect's
+    let coreTenantId = tenantId;
+    const tenant = await db.select({ settings: tenants.settings }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const externalId = tenant[0]?.settings?.externalId as string | undefined;
+    if (externalId) coreTenantId = externalId;
+
+    const hmacHeaders = buildCoreHmacHeaders('POST', url, body, coreTenantId, traceId, correlationId);
     Object.assign(headers, hmacHeaders);
   }
 
